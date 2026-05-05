@@ -17,6 +17,13 @@ from opentelemetry import trace as trace_api
 from ward.otel.tracer import setup_tracing
 from ward.otel.propagators import setup_propagators
 from ward.instrument_mapper import get_instrumentor
+from ward.session import (
+    SessionContext,
+    start_session,
+    end_session,
+    get_current_session_id,
+    set_session_id,
+)
 
 __version__ = "0.1.0"
 

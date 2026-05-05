@@ -7,7 +7,7 @@ dist/
 build/
 
 # Environment
-venv/
+.venv/
 .env
 
 # OS

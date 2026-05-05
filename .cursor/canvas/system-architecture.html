@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Anchor SDK — System Architecture</title>
+<title>Ward SDK — Architecture</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -301,7 +301,7 @@
 </head>
 <body>
 <div class="container">
-  <h1>anchor system architecture</h1>
+  <h1>ward system architecture</h1>
   <p class="subtitle">SDK → Gateway → Collector → ClickHouse // current state</p>
 
   <div class="diagram" style="height: 520px;">
@@ -328,8 +328,8 @@
     </div>
 
     <div class="node" style="left:20px; top:220px; width:140px;">
-      <div class="node-label c1">anchor SDK</div>
-      <div class="node-desc">anchor.init() wraps LLM clients via wrapt</div>
+      <div class="node-label c1">ward SDK</div>
+      <div class="node-desc">ward.init() wraps LLM clients via wrapt</div>
       <div class="node-tech">
         <span class="tag tag-python">pip</span>
         <span class="tag tag-otel">OTel</span>
@@ -388,7 +388,7 @@
 
     <div class="node" style="left:530px; top:370px; width:200px;">
       <div class="node-label" style="color:var(--text-dim);">Service Discovery</div>
-      <div class="node-desc">Internal DNS: redis.anchor.local, collector.anchor.local, clickhouse.anchor.local</div>
+      <div class="node-desc">Internal DNS: redis.ward.local, collector.ward.local, clickhouse.ward.local</div>
       <div class="node-tech"><span class="tag tag-aws">Route53 Private</span></div>
     </div>
 
@@ -433,7 +433,7 @@
       <div class="flow-card">
         <div class="flow-num c1">1</div>
         <div class="flow-title">SDK</div>
-        <div class="flow-desc">anchor.init() patches LLM clients. Each call creates an OTel span.</div>
+        <div class="flow-desc">ward.init() patches LLM clients. Each call creates an OTel span.</div>
       </div>
       <div class="flow-card">
         <div class="flow-num c2">2</div>
@@ -461,8 +461,8 @@
   <!-- Legend -->
   <div class="legend">
     <div class="legend-card">
-      <h3 style="color:var(--accent2);">src/anchor/</h3>
-      <p>Python SDK core. init(), OTel tracer setup, wrapt-based instrumentation for OpenAI &amp; Anthropic. Published as anchor-sdk on PyPI.</p>
+      <h3 style="color:var(--accent2);">src/ward/</h3>
+      <p>Python SDK core. init(), OTel tracer setup, wrapt-based instrumentation for OpenAI &amp; Anthropic. Published as ward-sdk on PyPI.</p>
     </div>
     <div class="legend-card">
       <h3 style="color:var(--accent);">gateway/</h3>
@@ -483,7 +483,7 @@
     <div class="legend" style="margin-top:12px;">
       <div class="legend-card">
         <h3 style="color:var(--text-dim);">Entrypoints</h3>
-        <div class="step"><span class="step-num" style="background:rgba(167,139,250,0.2);color:var(--accent2);">1</span>src/anchor/__init__.py → anchor.init()</div>
+        <div class="step"><span class="step-num" style="background:rgba(167,139,250,0.2);color:var(--accent2);">1</span>src/ward/__init__.py → ward.init()</div>
         <div class="step"><span class="step-num" style="background:rgba(34,211,238,0.2);color:var(--accent);">2</span>gateway/cmd/gateway/main.go → HTTP server</div>
         <div class="step"><span class="step-num" style="background:rgba(34,211,238,0.2);color:var(--accent);">3</span>gateway/cmd/seed/main.go → API key generator</div>
       </div>

@@ -11,6 +11,7 @@ from typing import Callable, Dict, Any
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from ward.conventions import SemanticConventions
+from ward.session import get_current_session_id, start_session
 from ward.instrumentation.openai.utils import handle_exception, response_to_dict
 
 
@@ -347,6 +348,13 @@ def messages_create(config: Dict[str, Any]) -> Callable:
             span.set_attribute(SemanticConventions.GEN_AI_REQUEST_MODEL, request_model)
             span.set_attribute(SemanticConventions.SERVER_ADDRESS, server_address)
             span.set_attribute(SemanticConventions.SERVER_PORT, server_port)
+
+            # Add session tracking
+            session_id = get_current_session_id()
+            if not session_id:
+                session_id = start_session()
+            span.set_attribute(SemanticConventions.GEN_AI_SESSION_ID, session_id)
+
             _set_request_attributes(span, kwargs, capture_message_content)
 
         start_time = time.time()
@@ -388,6 +396,13 @@ def async_messages_create(config: Dict[str, Any]) -> Callable:
             span.set_attribute(SemanticConventions.GEN_AI_REQUEST_MODEL, request_model)
             span.set_attribute(SemanticConventions.SERVER_ADDRESS, server_address)
             span.set_attribute(SemanticConventions.SERVER_PORT, server_port)
+
+            # Add session tracking
+            session_id = get_current_session_id()
+            if not session_id:
+                session_id = start_session()
+            span.set_attribute(SemanticConventions.GEN_AI_SESSION_ID, session_id)
+
             _set_request_attributes(span, kwargs, capture_message_content)
 
         start_time = time.time()

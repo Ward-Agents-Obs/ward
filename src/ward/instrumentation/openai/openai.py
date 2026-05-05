@@ -17,6 +17,7 @@ from typing import Callable, Dict, Any
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 from ward.conventions import SemanticConventions
+from ward.session import get_current_session_id, start_session
 from ward.instrumentation.openai.utils import (
     set_server_address_and_port,
     handle_exception,
@@ -322,6 +323,13 @@ def create_wrapper(
             span.set_attribute(SemanticConventions.SERVER_ADDRESS, server_address)
             span.set_attribute(SemanticConventions.SERVER_PORT, server_port)
             span.set_attribute(SemanticConventions.GEN_AI_ENDPOINT, f"{server_address}:{server_port}")
+
+            # Add session tracking
+            session_id = get_current_session_id()
+            if not session_id:
+                session_id = start_session()
+            span.set_attribute(SemanticConventions.GEN_AI_SESSION_ID, session_id)
+
             _set_request_attributes(span, kwargs, capture_message_content)
 
         start_time = time.time()
@@ -401,6 +409,13 @@ def create_async_wrapper(
             span.set_attribute(SemanticConventions.SERVER_ADDRESS, server_address)
             span.set_attribute(SemanticConventions.SERVER_PORT, server_port)
             span.set_attribute(SemanticConventions.GEN_AI_ENDPOINT, f"{server_address}:{server_port}")
+
+            # Add session tracking
+            session_id = get_current_session_id()
+            if not session_id:
+                session_id = start_session()
+            span.set_attribute(SemanticConventions.GEN_AI_SESSION_ID, session_id)
+
             _set_request_attributes(span, kwargs, capture_message_content)
 
         start_time = time.time()

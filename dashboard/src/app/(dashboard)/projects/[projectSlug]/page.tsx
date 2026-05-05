@@ -1,12 +1,10 @@
-import { Activity, Clock, Cpu, DollarSign } from "lucide-react";
 import { getOrCreateOrg } from "@/lib/org";
 import { getProjectDescription, getProjectDisplayName } from "@/lib/projects";
-import { getCostByModel, getOverviewMetrics, getSpansOverTime } from "@/lib/queries/overview";
+import { getOverviewMetrics } from "@/lib/queries/overview";
 import { formatCost, formatLatency, formatNumber } from "@/lib/utils";
-import { MetricCard } from "@/components/metric-card";
-import { OverviewOnboarding } from "@/components/overview-onboarding";
+import { SdkOnboarding } from "@/components/sdk-onboarding";
 import { TenantContextFallback } from "@/components/tenant-context-fallback";
-import { OverviewCharts } from "@/app/(dashboard)/overview/charts";
+import { prisma } from "@/lib/prisma";
 
 export default async function ProjectDashboardPage({
   params,
@@ -18,24 +16,24 @@ export default async function ProjectDashboardPage({
     return <TenantContextFallback />;
   }
 
-  const [metrics, spansOverTime, costByModel] = await Promise.all([
+  const [metrics, apiKeys] = await Promise.all([
     getOverviewMetrics(org.tenantId),
-    getSpansOverTime(org.tenantId),
-    getCostByModel(org.tenantId),
+    prisma.apiKey.findFirst({
+      where: { orgId: org.id, active: true },
+      orderBy: { createdAt: 'desc' },
+    }),
   ]);
 
   const projectName = getProjectDisplayName(projectSlug);
   const projectDescription = getProjectDescription(projectSlug);
-  const spanChartData = spansOverTime.map((r) => ({
-    date: r.date,
-    spans: parseInt(r.spans),
-  }));
-  const costChartData = costByModel.map((r) => ({
-    name: r.model,
-    value: parseFloat(r.cost),
-  }));
   const hasData = metrics.totalSpans > 0;
 
+  // If no data, show only the SDK onboarding
+  if (!hasData) {
+    return <SdkOnboarding projectSlug={projectSlug} apiKey={apiKeys?.keyPrefix} />;
+  }
+
+  // If has data, show the full dashboard
   return (
     <div className="space-y-8">
       <div className="rounded-[2rem] border tech-border bg-panel p-8">
@@ -46,26 +44,62 @@ export default async function ProjectDashboardPage({
         <p className="mt-3 max-w-3xl text-sm leading-7 text-muted-foreground">{projectDescription}</p>
       </div>
 
-      <OverviewOnboarding hasData={hasData} projectSlug={projectSlug} />
-
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard title="Total Spans" value={formatNumber(metrics.totalSpans)} icon={Activity} />
-        <MetricCard title="Total Cost" value={formatCost(metrics.totalCost)} icon={DollarSign} />
-        <MetricCard title="Avg Latency" value={formatLatency(metrics.avgLatencyMs)} icon={Clock} />
-        <MetricCard title="Active Models" value={metrics.activeModels.toString()} icon={Cpu} />
-      </div>
-
-      {hasData ? (
-        <OverviewCharts spanData={spanChartData} costData={costChartData} />
-      ) : (
-        <div className="rounded-[2rem] border tech-border bg-panel p-8">
-          <h2 className="text-lg font-semibold text-foreground">No traces yet</h2>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-            This project is ready for its first request. Create an API key, instrument one call, and refresh the traces
-            view to see volume, model mix, and latency begin to populate.
-          </p>
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* Top Row - Large Metric Cards */}
+        <div className="rounded-xl border tech-border bg-panel p-6">
+          <h3 className="text-sm font-medium text-muted-foreground">Total cost</h3>
+          <div className="mt-5 flex items-baseline gap-2">
+            <span className="text-4xl font-semibold text-foreground tracking-tight">{formatCost(metrics.totalCost)}</span>
+          </div>
         </div>
-      )}
+
+        <div className="rounded-xl border tech-border bg-panel p-6">
+          <h3 className="text-sm font-medium text-muted-foreground">Total requests</h3>
+          <div className="mt-5 flex items-baseline gap-2">
+            <span className="text-4xl font-semibold text-foreground tracking-tight">{formatNumber(metrics.totalSpans)}</span>
+          </div>
+        </div>
+
+        {/* Second Row - Charts */}
+        <div className="rounded-xl border tech-border bg-panel p-6">
+          <h3 className="mb-4 text-sm font-medium text-muted-foreground">Daily cost</h3>
+          <div className="h-48">
+            {/* This would be a chart showing daily cost over time */}
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <div className="text-center">
+                <div className="text-2xl font-semibold">$0</div>
+                <div className="text-sm">No data yet</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border tech-border bg-panel p-6">
+          <h3 className="mb-4 text-sm font-medium text-muted-foreground">Token usage</h3>
+          <div className="h-48">
+            {/* This would be a chart showing token usage */}
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <div className="text-center">
+                <div className="text-2xl font-semibold">0</div>
+                <div className="text-sm">No data yet</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border tech-border bg-panel p-6">
+          <h3 className="mb-4 text-sm font-medium text-muted-foreground">Median latency</h3>
+          <div className="h-48">
+            {/* This would be a chart showing latency over time */}
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <div className="text-center">
+                <div className="text-2xl font-semibold">{formatLatency(metrics.avgLatencyMs)}</div>
+                <div className="text-sm">Average latency</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
