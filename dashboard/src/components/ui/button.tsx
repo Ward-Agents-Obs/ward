@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef } from "react";
+import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
@@ -17,10 +18,16 @@ import { cn } from "@/lib/utils";
  * Sizes: `sm` (compact, used in tables), `default`, `lg` (hero CTAs), `icon`
  * (square button containing only a lucide icon).
  *
- * The `asChild` pattern is intentionally NOT exposed yet — adopting it
- * cleanly requires `@radix-ui/react-slot`, and architect's V1 scope rule
- * says no new top-level dependencies without sign-off. To wrap a Link, use
- * `<Link className={buttonVariants({ variant: 'secondary' })}>` directly.
+ * `asChild` lets the button styles project onto a single child element
+ * instead of rendering a `<button>`. The standard use is wrapping a
+ * `<Link>` so a navigation looks like a CTA but stays an `<a>`:
+ *
+ *   <Button asChild>
+ *     <Link href="/foo">Open</Link>
+ *   </Button>
+ *
+ * Implemented with `@radix-ui/react-slot`, which forwards the variant
+ * classes onto the child while preserving its semantics.
  */
 const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50",
@@ -51,17 +58,38 @@ const buttonVariants = cva(
 
 export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {}
+    VariantProps<typeof buttonVariants> {
+  /**
+   * When true, render the child element with the button styles applied
+   * (via `@radix-ui/react-slot`) instead of a `<button>`. Use to project
+   * Button styling onto a `<Link>`, anchor, or other interactive element
+   * without nested-interactive-elements HTML.
+   */
+  asChild?: boolean;
+}
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, type = "button", ...props }, ref) => (
-    <button
-      ref={ref}
-      type={type}
-      className={cn(buttonVariants({ variant, size, className }))}
-      {...props}
-    />
-  )
+  ({ className, variant, size, asChild = false, type, ...props }, ref) => {
+    if (asChild) {
+      // When projecting onto a child element we must NOT inject `type` —
+      // the child controls its own semantics (`<a>`, `<Link>`, etc.).
+      return (
+        <Slot
+          ref={ref}
+          className={cn(buttonVariants({ variant, size, className }))}
+          {...props}
+        />
+      );
+    }
+    return (
+      <button
+        ref={ref}
+        type={type ?? "button"}
+        className={cn(buttonVariants({ variant, size, className }))}
+        {...props}
+      />
+    );
+  }
 );
 Button.displayName = "Button";
 

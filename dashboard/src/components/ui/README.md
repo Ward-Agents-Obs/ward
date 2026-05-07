@@ -15,7 +15,8 @@ sweep, not a flag-day rewrite.
 | Primitive | File | Notes |
 |---|---|---|
 | `Skeleton` | `skeleton.tsx` | Loading placeholder. Tailwind `animate-pulse` + `bg-muted`. |
-| `Button` | `button.tsx` | CVA variants: `default`, `secondary`, `ghost`, `destructive`, `link`. Sizes: `sm`, `default`, `lg`, `icon`. |
+| `Button` | `button.tsx` | CVA variants: `default`, `secondary`, `ghost`, `destructive`, `link`. Sizes: `sm`, `default`, `lg`, `icon`. Supports `asChild` (via `@radix-ui/react-slot`) for projecting variant styles onto `<Link>` / `<a>`. |
+| `Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter` | `card.tsx` | Panel container. Variants: `panel` (default chart/section), `hero` (page-top header), `inset` (nested KPI/sub-panel). |
 | `Input` | `input.tsx` | Single input shape with focus ring on `--ring`. |
 | `Textarea` | `textarea.tsx` | Multi-line `<Input>`. Same tokens; manual resize, no autoresize in V1. |
 | `Label` | `label.tsx` | Plain `<label>`; pair with `Input`/`Textarea` via `htmlFor`. |
@@ -40,13 +41,14 @@ sweep, not a flag-day rewrite.
 
 ## Deliberate omissions in V1
 
-To stay within architect's V1 dep budget (no new top-level packages without
-sign-off), these primitives are built **without** `@radix-ui/*`. Specifically:
+V1 ships with the minimum viable subset of the shadcn surface — anything
+heavy that isn't load-bearing for the demo stays out. Specifically:
 
 - **`Dialog`** — rolled focus trap and Escape handling by hand. Missing
   versus Radix: inert background tree, screen-reader announcer, controlled
   portal container. Good enough for V1; swap to `@radix-ui/react-dialog`
-  later by replacing the implementation, the consumer API matches.
+  later by replacing the implementation, the consumer API matches. Tracked
+  as #38 (V1.1).
 - **`Select`** — native `<select>` for V1. The popover-style searchable
   Select needs `@radix-ui/react-select`. Once approved, ship a richer
   `Select` alongside the native one.
@@ -55,10 +57,10 @@ sign-off), these primitives are built **without** `@radix-ui/*`. Specifically:
 - **`Toast`** — local context + portal. No deduplication of identical
   toasts, no swipe-to-dismiss, no animation. Deliberately tiny.
 
-If a feature needs the Radix-quality version of one of these, escalate to
-`architect` for a dep approval. The primitive APIs above are deliberately
-shaped like shadcn so the swap is a one-shot rewrite of the file, not a
-caller migration.
+`@radix-ui/react-slot` IS installed (used by `Button asChild`). When V1.1
+swaps the others to Radix, no schema change to the consumer call sites.
+The primitive APIs above are deliberately shaped like shadcn so the swap is
+a one-shot rewrite of the file, not a caller migration.
 
 ## Usage examples
 
@@ -72,10 +74,22 @@ import { Button } from "@/components/ui/button";
 <Button variant="destructive">Delete</Button>
 ```
 
-To wrap a `<Link>` with button styling, use `buttonVariants` directly:
+To wrap a `<Link>` (or any other element) with button styling, prefer
+`asChild` — it preserves the child's semantics:
 
 ```tsx
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
+
+<Button asChild variant="secondary">
+  <Link href="/settings/keys">Manage keys</Link>
+</Button>
+```
+
+`buttonVariants(...)` applied directly to a `className` is the older
+pattern and still works:
+
+```tsx
 import { buttonVariants } from "@/components/ui/button";
 
 <Link href="/settings/keys" className={buttonVariants({ variant: "secondary" })}>
@@ -161,15 +175,46 @@ export function TraceModeToggle() {
 }
 ```
 
+### Card
+
+```tsx
+import {
+  Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter,
+} from "@/components/ui/card";
+
+<Card variant="hero">
+  <CardHeader>
+    <CardTitle>Tracing</CardTitle>
+    <CardDescription>All LLM calls instrumented by Ward.</CardDescription>
+  </CardHeader>
+</Card>
+
+<Card>
+  <CardHeader>
+    <CardTitle>Spans by model</CardTitle>
+  </CardHeader>
+  <CardContent>{/* chart */}</CardContent>
+</Card>
+
+<Card variant="inset">
+  <CardTitle>Spans</CardTitle>
+  <p className="mt-2 text-2xl font-semibold">1,204</p>
+</Card>
+```
+
 ## Migration plan
 
-Existing components that should adopt these primitives, in priority order:
+Existing components that should adopt these primitives, in priority order
+(active in #43, the styling-drift sweep):
 
 1. `create-key-dialog.tsx` → `Dialog` + `Button` + `Input` + `Label`.
-2. `traces/trace-filters.tsx` → `Input` + `Select` + `Button`.
-3. `trace-table.tsx`, `session-table.tsx`, `api-key-table.tsx`,
-   `costs/client.tsx` → `Table` set.
-4. Inline button styling across `(dashboard)/*` pages → `Button` /
-   `buttonVariants`.
+2. `trace-table.tsx` → `Table` set.
+3. `api-key-table.tsx` → `Table` set + destructive `Button`.
+4. `cost-chart.tsx` → swap legacy zinc hex literals for design tokens.
+5. `costs/client.tsx` → `Card` + `Table` set.
+
+Skipped intentionally: `sdk-onboarding.tsx` (design hasn't settled),
+`traces/trace-filters.tsx` (already uses primitives from F2),
+`session-table.tsx` (was rewritten in F2).
 
 Each migration is its own focused diff per AGENTS.MD §4.

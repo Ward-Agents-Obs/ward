@@ -11,6 +11,7 @@
   "dependencies": {
     "@clickhouse/client": "^1.18.2",
     "@prisma/client": "^6.19.3",
+    "@radix-ui/react-slot": "^1.2.3",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.57.4",
     "class-variance-authority": "^0.7.1",
