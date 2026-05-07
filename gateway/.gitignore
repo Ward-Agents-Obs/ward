@@ -1,3 +1,6 @@
-# Locally-built binaries from `go build` (e.g. setup_test_environment.sh builds the seed tool here)
-seed
-gateway
+# Locally-built binaries from `go build` (e.g. setup_test_environment.sh builds
+# the seed tool here). Anchored with `/` so they only match `gateway/seed` and
+# `gateway/gateway` at the gateway/ root, not the `cmd/seed/` and `cmd/gateway/`
+# source directories which share the basename and were being shadowed.
+/seed
+/gateway
