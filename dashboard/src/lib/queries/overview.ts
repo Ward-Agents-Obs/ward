@@ -374,3 +374,236 @@ export async function getSpansOverTimeByModel(
     spans: parseInt(row.spans, 10) || 0,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// V1.B — previous-window comparison + cost-over-time bucketing
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert an `OverviewTimeRange` to a minute count, used to express both the
+ * current and the previous window as `INTERVAL N MINUTE` clauses in the
+ * conditional aggregates below. Pulling the math out of the SQL keeps the
+ * query string readable and makes the fixed-set windows easy to extend later.
+ */
+function rangeToMinutes(range: OverviewTimeRange): number {
+  return RANGE_CONFIG[range].hours * 60;
+}
+
+export interface OverviewMetricsDelta {
+  /**
+   * Signed percentage change vs the previous window.
+   *   delta = 100 * (current - previous) / previous
+   *
+   * `null` when the previous window has no data — the page renders a "no
+   * comparison available" affordance rather than showing a misleading
+   * "+Infinity%" arrow.
+   */
+  totalSpans: number | null;
+  totalCost: number | null;
+  avgLatency: number | null;
+  errorRate: number | null;
+}
+
+/**
+ * Tenant-scoped previous-window delta for the four overview KPI tiles.
+ *
+ * Computes both windows in a single ClickHouse round-trip by using `*If()`
+ * conditional aggregates. The frontend MetricCards (wired in F1) accept a
+ * signed percentage and render the up/down arrow + colour from `goodDirection`
+ * — see comments in `dashboard/src/app/(dashboard)/overview/page.tsx` for the
+ * full integration shape.
+ *
+ * Window semantics (locked):
+ *   • current  = [ now() - currentRange, now() ]
+ *   • previous = [ now() - currentRange - previousRange, now() - currentRange ]
+ * In other words, `previousRange` is the SIZE of the lookback window placed
+ * immediately before the current window. Passing `previousRange = currentRange`
+ * gives the standard "this 24h vs last 24h" comparison; differing values
+ * support custom comparisons (e.g. "last 1h vs the previous 24h baseline").
+ *
+ * Filters mirror `getOverviewMetrics` — GenAI spans only, optional environment
+ * filter — so the delta refers to the same population the KPI tile shows.
+ */
+export async function getOverviewMetricsDelta(
+  tenantId: string,
+  currentRange: OverviewTimeRange,
+  previousRange: OverviewTimeRange,
+  environment?: string,
+): Promise<OverviewMetricsDelta> {
+  const resolvedTenantId = requireTenantId(tenantId);
+  const currentMinutes = rangeToMinutes(currentRange);
+  const previousMinutes = rangeToMinutes(previousRange);
+  const combinedMinutes = currentMinutes + previousMinutes;
+  const envFilter = environmentFilter(environment);
+
+  // Single round-trip: one outer WHERE prunes by tenant + (optional) env +
+  // the combined window, then conditional aggregates split each metric into
+  // current / previous halves. The outer Timestamp clause keeps the partition
+  // scan tight; the inner `*If()` predicates do the bucketing.
+  const result = await clickhouse.query({
+    query: `
+      SELECT
+        countIf(Timestamp >= now() - INTERVAL {currentMinutes:UInt32} MINUTE) AS currentSpans,
+        countIf(
+          Timestamp >= now() - INTERVAL {combinedMinutes:UInt32} MINUTE
+          AND Timestamp <  now() - INTERVAL {currentMinutes:UInt32} MINUTE
+        ) AS previousSpans,
+        sumIf(
+          toFloat64OrZero(SpanAttributes['gen_ai.usage.cost']),
+          Timestamp >= now() - INTERVAL {currentMinutes:UInt32} MINUTE
+        ) AS currentCost,
+        sumIf(
+          toFloat64OrZero(SpanAttributes['gen_ai.usage.cost']),
+          Timestamp >= now() - INTERVAL {combinedMinutes:UInt32} MINUTE
+          AND Timestamp <  now() - INTERVAL {currentMinutes:UInt32} MINUTE
+        ) AS previousCost,
+        avgIf(
+          Duration / 1000000,
+          Timestamp >= now() - INTERVAL {currentMinutes:UInt32} MINUTE
+        ) AS currentLatency,
+        avgIf(
+          Duration / 1000000,
+          Timestamp >= now() - INTERVAL {combinedMinutes:UInt32} MINUTE
+          AND Timestamp <  now() - INTERVAL {currentMinutes:UInt32} MINUTE
+        ) AS previousLatency,
+        countIf(
+          StatusCode = 'Error'
+          AND Timestamp >= now() - INTERVAL {currentMinutes:UInt32} MINUTE
+        ) AS currentErrors,
+        countIf(
+          StatusCode = 'Error'
+          AND Timestamp >= now() - INTERVAL {combinedMinutes:UInt32} MINUTE
+          AND Timestamp <  now() - INTERVAL {currentMinutes:UInt32} MINUTE
+        ) AS previousErrors
+      FROM otel_traces
+      WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
+        AND SpanAttributes['gen_ai.request.model'] != ''
+        AND Timestamp >= now() - INTERVAL {combinedMinutes:UInt32} MINUTE
+    `,
+    query_params: {
+      tenantId: resolvedTenantId,
+      currentMinutes,
+      combinedMinutes,
+      environment: environment ?? "",
+    },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    currentSpans: string;
+    previousSpans: string;
+    currentCost: string;
+    previousCost: string;
+    currentLatency: number | string | null;
+    previousLatency: number | string | null;
+    currentErrors: string;
+    previousErrors: string;
+  }>();
+  const row = rows[0];
+  if (!row) {
+    return { totalSpans: null, totalCost: null, avgLatency: null, errorRate: null };
+  }
+
+  const currentSpans = parseInt(row.currentSpans, 10) || 0;
+  const previousSpans = parseInt(row.previousSpans, 10) || 0;
+  const currentCost = parseFloat(row.currentCost as string) || 0;
+  const previousCost = parseFloat(row.previousCost as string) || 0;
+  const currentLatency = toFiniteNumber(row.currentLatency);
+  const previousLatency = toFiniteNumber(row.previousLatency);
+  const currentErrors = parseInt(row.currentErrors, 10) || 0;
+  const previousErrors = parseInt(row.previousErrors, 10) || 0;
+
+  // Error RATE compares ratios, not raw counts — a doubled error count under
+  // doubled traffic is unchanged. Compute each window's rate, then take the
+  // pct change between rates. Falls through to `null` when either window has
+  // zero spans (no traffic → undefined rate).
+  const currentErrorRate = currentSpans > 0 ? currentErrors / currentSpans : null;
+  const previousErrorRate = previousSpans > 0 ? previousErrors / previousSpans : null;
+
+  return {
+    totalSpans: pctChange(currentSpans, previousSpans),
+    totalCost: pctChange(currentCost, previousCost),
+    avgLatency: pctChange(currentLatency, previousLatency),
+    errorRate: pctChange(currentErrorRate, previousErrorRate),
+  };
+}
+
+/**
+ * Signed percentage change. Returns `null` when `previous` is null/zero so
+ * callers can render "no comparison" rather than `+Infinity%` or NaN.
+ * `current` of null also returns null — we don't synthesize a "fell to zero"
+ * delta from a missing aggregate.
+ */
+function pctChange(current: number | null, previous: number | null): number | null {
+  if (current === null || previous === null) return null;
+  if (!Number.isFinite(current) || !Number.isFinite(previous)) return null;
+  if (previous === 0) return null;
+  return ((current - previous) / previous) * 100;
+}
+
+/** Coerce ClickHouse aggregate output to a finite number, or null on NaN/missing. */
+function toFiniteNumber(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+export interface CostOverTimeBucket {
+  /** ClickHouse bucket string in `YYYY-MM-DD HH:MM:SS` form, UTC. */
+  bucket: string;
+  /** Total cost (USD) of GenAI spans in this bucket. */
+  cost: number;
+}
+
+/**
+ * Tenant-scoped per-bucket cost over the requested window. Bucket size comes
+ * from the same `RANGE_CONFIG` the latency / error-rate / spans-by-model
+ * queries use, so all four panels on the overview render against an aligned
+ * x-axis. GenAI spans only — non-LLM spans wouldn't carry `gen_ai.usage.cost`
+ * anyway, but the explicit filter matches the read-paths used by the other
+ * V1.B charts and keeps the empty-bucket semantics consistent.
+ *
+ * Empty buckets (no spans landed in that window) are omitted; consumers can
+ * either render gaps or zero-fill on the client. The shape matches the
+ * frontend's `<CostOverTimeChart>` which currently consumes an empty-array
+ * stub — once this query is wired in `page.tsx`, the chart appears with no
+ * further changes.
+ */
+export async function getCostOverTime(
+  tenantId: string,
+  range: OverviewTimeRange,
+  environment?: string,
+): Promise<CostOverTimeBucket[]> {
+  const resolvedTenantId = requireTenantId(tenantId);
+  const { hours, bucketSeconds } = resolveRange(range);
+  const envFilter = environmentFilter(environment);
+
+  const result = await clickhouse.query({
+    query: `
+      SELECT
+        toString(toStartOfInterval(Timestamp, INTERVAL {bucketSeconds:UInt32} SECOND)) AS bucket,
+        sum(toFloat64OrZero(SpanAttributes['gen_ai.usage.cost'])) AS cost
+      FROM otel_traces
+      WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
+        AND SpanAttributes['gen_ai.request.model'] != ''
+        AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
+      GROUP BY bucket
+      ORDER BY bucket
+    `,
+    query_params: {
+      tenantId: resolvedTenantId,
+      hours,
+      bucketSeconds,
+      environment: environment ?? "",
+    },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{ bucket: string; cost: number | string }>();
+  return rows.map((row) => ({
+    bucket: row.bucket,
+    cost: typeof row.cost === "number" ? row.cost : parseFloat(row.cost) || 0,
+  }));
+}

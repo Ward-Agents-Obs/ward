@@ -27,9 +27,11 @@
 import { randomBytes } from "node:crypto";
 
 import {
+  getCostOverTime,
   getErrorRateOverTime,
   getLatencyPercentiles,
   getOverviewMetrics,
+  getOverviewMetricsDelta,
   getRecentFailures,
   getSpansOverTimeByModel,
 } from "../src/lib/queries/overview";
@@ -268,6 +270,116 @@ async function runChecks() {
   // that always returns data.
   const bMetricsProd = await getOverviewMetrics(TENANT_B, "production");
   assert(bMetricsProd.totalSpans === 0, `B env=production is empty — B's spans are all staging (got ${bMetricsProd.totalSpans})`);
+
+  // -------------------------------------------------------------------------
+  // #39 — getOverviewMetricsDelta tenant + null-handling regression check.
+  //
+  // All seeded spans are in the last few minutes (ageSeconds ≤ 200), which
+  // fits comfortably inside a 1h current window. The previous 1h window
+  // (60–120 min ago) is empty, so every delta should return `null` (no
+  // comparison available) — verifying the divide-by-zero guard.
+  // Tenant scoping is checked symmetrically: orgA's deltas must not see
+  // orgB's spans (same trick as above — A's "currentSpans" must reflect 7,
+  // not 11). The shape of the response is asserted to catch any field-name
+  // drift between this query and the four MetricCards on the overview page.
+  // -------------------------------------------------------------------------
+  console.log("\n# getOverviewMetricsDelta");
+  const deltaA = await getOverviewMetricsDelta(TENANT_A, "1h", "1h");
+  const deltaB = await getOverviewMetricsDelta(TENANT_B, "1h", "1h");
+
+  // Shape check — the page wires these four exact keys.
+  const expectedKeys = ["totalSpans", "totalCost", "avgLatency", "errorRate"] as const;
+  for (const key of expectedKeys) {
+    assert(
+      key in deltaA,
+      `getOverviewMetricsDelta result includes '${key}' for orgA`,
+    );
+  }
+
+  // Previous window is empty for both tenants → all deltas null. Asserting
+  // null instead of `0` matters: the page's MetricCard treats null as "no
+  // comparison" (no arrow) and 0 as "exactly flat" (neutral arrow).
+  for (const key of expectedKeys) {
+    assert(
+      deltaA[key] === null,
+      `orgA delta.${key} === null when previous window is empty (got ${deltaA[key]})`,
+    );
+    assert(
+      deltaB[key] === null,
+      `orgB delta.${key} === null when previous window is empty (got ${deltaB[key]})`,
+    );
+  }
+
+  // Tenant scoping — empty environment for orgA's tenant should NOT pull in
+  // orgB's spans. We exercise the env filter path too (orgA's env=staging
+  // returns null deltas because A has zero staging spans).
+  const deltaAStaging = await getOverviewMetricsDelta(TENANT_A, "1h", "1h", "staging");
+  for (const key of expectedKeys) {
+    assert(
+      deltaAStaging[key] === null,
+      `orgA delta.${key} env=staging is null (no staging spans for A) (got ${deltaAStaging[key]})`,
+    );
+  }
+
+  let deltaBlankThrew = false;
+  try {
+    await getOverviewMetricsDelta("", "1h", "1h");
+  } catch {
+    deltaBlankThrew = true;
+  }
+  assert(deltaBlankThrew, "getOverviewMetricsDelta: blank tenant id throws");
+
+  // -------------------------------------------------------------------------
+  // #40 — getCostOverTime tenant scoping + cost direction.
+  //
+  // orgA: 7 spans × $0.0015 = $0.0105 total. orgB: 4 × $0.0015 = $0.006.
+  // Cross-leak would surface as orgA's bucketed sum >= orgB's, OR as either
+  // tenant's bucketed sum overshooting their seeded total.
+  // -------------------------------------------------------------------------
+  console.log("\n# getCostOverTime");
+  const costA = await getCostOverTime(TENANT_A, "1h");
+  const costB = await getCostOverTime(TENANT_B, "1h");
+  const costSumA = costA.reduce((sum, b) => sum + b.cost, 0);
+  const costSumB = costB.reduce((sum, b) => sum + b.cost, 0);
+
+  // Tolerance accounts for ambient cluster noise from prior runs whose
+  // ALTER DELETE hasn't finished mutating yet.
+  assert(
+    Math.abs(costSumA - 0.0105) < 0.005,
+    `orgA cost-over-time sum ≈ 0.0105 (got ${costSumA.toFixed(4)})`,
+  );
+  assert(
+    Math.abs(costSumB - 0.006) < 0.005,
+    `orgB cost-over-time sum ≈ 0.006 (got ${costSumB.toFixed(4)})`,
+  );
+  assert(
+    costSumB < costSumA,
+    `tenant scope holds: orgB cost (${costSumB.toFixed(4)}) < orgA cost (${costSumA.toFixed(4)})`,
+  );
+
+  // Bucket shape sanity — every bucket has a non-empty timestamp string and
+  // a non-negative cost.
+  for (const bucket of costA) {
+    assert(
+      bucket.bucket.length > 0 && Number.isFinite(bucket.cost) && bucket.cost >= 0,
+      `orgA cost bucket well-formed (bucket=${bucket.bucket} cost=${bucket.cost})`,
+    );
+  }
+
+  // Env filter: orgA staging returns zero buckets (A has no staging spans).
+  const costAStaging = await getCostOverTime(TENANT_A, "1h", "staging");
+  assert(
+    costAStaging.length === 0,
+    `orgA cost-over-time env=staging is empty (got ${costAStaging.length} buckets)`,
+  );
+
+  let costBlankThrew = false;
+  try {
+    await getCostOverTime("", "1h");
+  } catch {
+    costBlankThrew = true;
+  }
+  assert(costBlankThrew, "getCostOverTime: blank tenant id throws");
 }
 
 async function main() {
