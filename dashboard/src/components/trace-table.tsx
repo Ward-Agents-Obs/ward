@@ -3,7 +3,22 @@
 import Link from "next/link";
 import type { TraceRow } from "@/lib/queries/traces";
 import { formatCost, formatLatency } from "@/lib/utils";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
+/**
+ * Span-level trace table consumed by the (still-mounted-but-unlinked)
+ * `/projects/[slug]/traces` route. Migrated to the V1 Table primitives as
+ * part of #43 (styling-drift sweep). Behaviour is unchanged from V1.0; only
+ * markup + tokens differ. The newer workspace `/traces` page uses
+ * `<SpanListTable>` (a different component) — they don't share rendering.
+ */
 export function TraceTable({
   traces,
   traceHrefBase = "/traces",
@@ -13,62 +28,64 @@ export function TraceTable({
 }) {
   if (traces.length === 0) {
     return (
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-12 text-center text-zinc-500">
-        No traces found. Start sending data through the SDK to see traces here.
+      <div className="rounded-2xl border border-dashed tech-border bg-panel p-12 text-center">
+        <p className="text-sm font-medium text-foreground">No traces yet</p>
+        <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+          Install the SDK with the snippet on the Settings page and run one
+          instrumented call. Traces appear here within seconds.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-zinc-800">
-      <table className="w-full text-sm">
-        <thead className="border-b border-zinc-800 bg-zinc-900/50">
-          <tr>
-            <th className="px-4 py-3 text-left font-medium text-zinc-400">Timestamp</th>
-            <th className="px-4 py-3 text-left font-medium text-zinc-400">Span</th>
-            <th className="px-4 py-3 text-left font-medium text-zinc-400">Model</th>
-            <th className="px-4 py-3 text-right font-medium text-zinc-400">Tokens</th>
-            <th className="px-4 py-3 text-right font-medium text-zinc-400">Cost</th>
-            <th className="px-4 py-3 text-right font-medium text-zinc-400">Latency</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-zinc-800/50">
-          {traces.map((trace) => (
-            <tr
-              key={trace.spanId}
-              className="transition-colors hover:bg-zinc-900/50"
-            >
-              <td className="whitespace-nowrap px-4 py-3 text-zinc-400">
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Timestamp</TableHead>
+          <TableHead>Span</TableHead>
+          <TableHead>Model</TableHead>
+          <TableHead className="text-right">Tokens</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">Latency</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {traces.map((trace) => {
+          const totalTokens = trace.inputTokens + trace.outputTokens;
+          return (
+            <TableRow key={trace.spanId}>
+              <TableCell className="whitespace-nowrap text-muted-foreground">
                 {new Date(trace.timestamp).toLocaleString()}
-              </td>
-              <td className="px-4 py-3">
+              </TableCell>
+              <TableCell>
                 <Link
                   href={`${traceHrefBase}/${trace.traceId}`}
                   className="font-medium text-foreground hover:underline"
                 >
                   {trace.spanName}
                 </Link>
-              </td>
-              <td className="px-4 py-3">
-                <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs font-mono">
+              </TableCell>
+              <TableCell>
+                <span className="rounded bg-background px-2 py-0.5 font-mono text-xs">
                   {trace.model || "—"}
                 </span>
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums text-zinc-300">
-                {trace.inputTokens + trace.outputTokens > 0
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {totalTokens > 0
                   ? `${trace.inputTokens} → ${trace.outputTokens}`
                   : "—"}
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums text-zinc-300">
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
                 {trace.cost > 0 ? formatCost(trace.cost) : "—"}
-              </td>
-              <td className="px-4 py-3 text-right tabular-nums text-zinc-300">
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
                 {formatLatency(trace.duration)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }
