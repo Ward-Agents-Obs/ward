@@ -6,10 +6,20 @@ import { formatCost, formatLatency } from "@/lib/utils";
 
 interface SessionTableProps {
   sessions: SessionRow[];
+  /**
+   * Base path used for the per-row session detail link. Defaults to
+   * `/traces/sessions` to match the V1 routing layout (F2 — task #11):
+   *  - `/traces/[traceId]`        → trace detail (queries by TraceId)
+   *  - `/traces/sessions/[sessionId]` → session detail (queries by gen_ai.session.id)
+   * Callers that need to embed the table elsewhere can override.
+   */
   sessionHrefBase?: string;
 }
 
-export function SessionTable({ sessions, sessionHrefBase = "/traces" }: SessionTableProps) {
+export function SessionTable({
+  sessions,
+  sessionHrefBase = "/traces/sessions",
+}: SessionTableProps) {
   if (sessions.length === 0) {
     return (
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-12 text-center text-zinc-500">

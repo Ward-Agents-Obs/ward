@@ -2,44 +2,40 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getOrCreateOrg } from "@/lib/org";
 import { TenantContextFallback } from "@/components/tenant-context-fallback";
-import { getTraceDetail } from "@/lib/queries/traces";
+import { getSessionDetail } from "@/lib/queries/sessions";
 import { formatCost, formatLatency, formatNumber } from "@/lib/utils";
 import { Waterfall, type WaterfallSpan } from "@/components/traces/waterfall";
-import { PromptCompletionPane } from "@/components/traces/prompt-completion-pane";
 import { AttributesTable } from "@/components/traces/attributes-table";
 import { buttonVariants } from "@/components/ui/button";
 
 /**
- * Trace detail page.
+ * Session detail page — the multi-trace counterpart to `/traces/[traceId]`.
  *
- * Replaces the V1.0 page that — confusingly — accepted a `[traceId]` param
- * but actually queried by `gen_ai.session.id`. F2 (#11) splits the surfaces:
- *   /traces/[traceId]                → this page (queries by TraceId)
- *   /traces/sessions/[sessionId]     → session detail
+ * Shows every span associated with `gen_ai.session.id = {sessionId}` in
+ * chronological order, with a waterfall reconstructed from parent/child
+ * pointers (sessions can span multiple traces, but parent links only resolve
+ * within the same trace; orphans become roots in `<Waterfall>`).
  *
- * Layout:
- *   - hero with trace id + summary stats (span count, total latency, cost)
- *   - prompt + completion panes (from the root span's gen_ai attributes)
- *   - waterfall reconstructed from parent/child span pointers
- *   - per-span attribute tables collapsed inside disclosure
+ * V1 scope: aggregate stats + waterfall + per-span attribute drilldown.
+ * Doesn't surface a structured prompt/completion timeline (would require
+ * cross-span message stitching across providers); per AGENTS.MD §4 we keep
+ * the session detail focused and let users drill into each underlying trace
+ * if they want the full conversation.
  */
-export default async function TraceDetailPage({
+export default async function SessionDetailPage({
   params,
 }: {
-  params: Promise<{ traceId: string }>;
+  params: Promise<{ sessionId: string }>;
 }) {
-  const [org, { traceId }] = await Promise.all([getOrCreateOrg(), params]);
+  const [org, { sessionId }] = await Promise.all([getOrCreateOrg(), params]);
   if (!org?.tenantId) {
     return <TenantContextFallback />;
   }
 
-  const rawSpans = (await getTraceDetail(org.tenantId, traceId)) as RawSpan[];
-
+  const rawSpans = (await getSessionDetail(org.tenantId, sessionId)) as RawSpan[];
   const spans = rawSpans.map(parseSpan);
-  const root = pickRootSpan(spans);
 
-  // Aggregates for the hero — sum costs and tokens across the whole trace
-  // since a multi-step workflow may bill across several spans.
+  // Aggregates
   const totals = spans.reduce(
     (acc, span) => ({
       cost: acc.cost + (span.cost ?? 0),
@@ -53,42 +49,36 @@ export default async function TraceDetailPage({
       ? Math.max(...spans.map((s) => s.startMs + s.durationMs)) -
         Math.min(...spans.map((s) => s.startMs))
       : 0;
+  const uniqueTraces = new Set(rawSpans.map((s) => s.traceId)).size;
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-6 py-8 lg:px-10 lg:py-10">
       <div>
         <Link
-          href="/traces"
+          href="/traces?view=sessions"
           className={buttonVariants({ variant: "ghost", size: "sm" })}
         >
           <ArrowLeft className="mr-1 h-3.5 w-3.5" />
-          Back to traces
+          Back to sessions
         </Link>
       </div>
 
       <div className="rounded-[2rem] border tech-border bg-panel p-8">
         <span className="inline-flex rounded-full bg-background px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-          Ward / Trace detail
+          Ward / Session detail
         </span>
         <h1 className="mt-5 text-3xl font-semibold tracking-tight text-foreground">
-          {root?.spanName ?? "Trace detail"}
+          Session
         </h1>
         <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
-          {traceId}
+          {sessionId}
         </p>
 
         {spans.length > 0 ? (
           <dl className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Spans" value={formatNumber(spans.length)} />
+            <Stat label="Traces" value={formatNumber(uniqueTraces)} />
             <Stat label="Total latency" value={formatLatency(totalLatencyMs)} />
-            <Stat
-              label="Tokens"
-              value={
-                totals.inputTokens + totals.outputTokens > 0
-                  ? `${formatNumber(totals.inputTokens)} → ${formatNumber(totals.outputTokens)}`
-                  : "—"
-              }
-            />
             <Stat
               label="Cost"
               value={totals.cost > 0 ? formatCost(totals.cost) : "—"}
@@ -100,25 +90,20 @@ export default async function TraceDetailPage({
       {spans.length === 0 ? (
         <div className="rounded-[1.5rem] border border-dashed tech-border bg-panel p-12 text-center">
           <p className="text-sm font-medium text-foreground">
-            No spans found for this trace.
+            No spans found for this session.
           </p>
           <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-            The trace id may belong to another tenant, or the data may have
+            The session id may belong to another tenant, or the data may have
             aged out of the retention window.
           </p>
         </div>
       ) : (
         <>
-          <PromptCompletionPane
-            prompt={root?.prompt}
-            completion={root?.completion}
-          />
-
           <section className="rounded-[1.5rem] border tech-border bg-panel p-6">
             <div className="mb-4">
               <h2 className="text-sm font-medium text-foreground">Span timeline</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Parent → child reconstruction with relative start offsets.
+                All spans across traces in this session.
               </p>
             </div>
             <Waterfall spans={spans} />
@@ -128,7 +113,8 @@ export default async function TraceDetailPage({
             <div className="mb-4">
               <h2 className="text-sm font-medium text-foreground">Span attributes</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Click a span to inspect the OTel attribute bag.
+                Inspect any span for prompts, completions, and OTel metadata.
+                Use the link to open its trace in isolation.
               </p>
             </div>
             <div className="space-y-3">
@@ -143,7 +129,13 @@ export default async function TraceDetailPage({
                       {formatLatency(span.durationMs)}
                     </span>
                   </summary>
-                  <div className="mt-4">
+                  <div className="mt-4 space-y-4">
+                    <Link
+                      href={`/traces/${span.traceId}`}
+                      className={buttonVariants({ variant: "secondary", size: "sm" })}
+                    >
+                      Open trace
+                    </Link>
                     <AttributesTable attributes={span.attributes} />
                   </div>
                 </details>
@@ -157,7 +149,10 @@ export default async function TraceDetailPage({
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — keep parsing logic out of the JSX so the page stays readable.
+// Helpers — separate from the trace-detail page so the two surfaces can
+// evolve independently. Some duplication is fine here per AGENTS.MD §1
+// (correctness > cleverness); a shared helper module is V1.1 work once we
+// see how the two pages diverge.
 // ---------------------------------------------------------------------------
 
 interface RawSpan {
@@ -166,16 +161,15 @@ interface RawSpan {
   parentSpanId?: string | null;
   spanName: string;
   timestamp: string;
-  duration: number; // ms (already divided by 1e6 in the query)
+  duration: number;
   attributes?: Record<string, unknown> | null;
   status: string;
   statusMessage?: string | null;
 }
 
 interface ParsedSpan extends WaterfallSpan {
+  traceId: string;
   attributes: Record<string, unknown> | null;
-  prompt?: string;
-  completion?: string;
   cost?: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -183,18 +177,12 @@ interface ParsedSpan extends WaterfallSpan {
 
 function parseSpan(raw: RawSpan): ParsedSpan {
   const attrs = raw.attributes ?? null;
-  const promptVal = attrs?.["gen_ai.prompt"];
-  const completionVal = attrs?.["gen_ai.completion"];
-  const costVal = attrs?.["gen_ai.usage.cost"];
-  const inVal = attrs?.["gen_ai.usage.input_tokens"];
-  const outVal = attrs?.["gen_ai.usage.output_tokens"];
-  // Convert ClickHouse's "YYYY-MM-DD HH:MM:SS" into ms since epoch. Modern
-  // V8 accepts this if we pin UTC.
   const parsedDate = new Date(String(raw.timestamp).replace(" ", "T") + "Z");
   const startMs = Number.isNaN(parsedDate.getTime())
     ? Date.parse(String(raw.timestamp))
     : parsedDate.getTime();
   return {
+    traceId: raw.traceId,
     spanId: raw.spanId,
     parentSpanId: raw.parentSpanId || null,
     spanName: raw.spanName,
@@ -203,27 +191,10 @@ function parseSpan(raw: RawSpan): ParsedSpan {
     status: raw.status,
     statusMessage: raw.statusMessage ?? undefined,
     attributes: attrs,
-    prompt: typeof promptVal === "string" ? promptVal : undefined,
-    completion: typeof completionVal === "string" ? completionVal : undefined,
-    cost: toNumberOrUndefined(costVal),
-    inputTokens: toIntOrUndefined(inVal),
-    outputTokens: toIntOrUndefined(outVal),
+    cost: toNumberOrUndefined(attrs?.["gen_ai.usage.cost"]),
+    inputTokens: toIntOrUndefined(attrs?.["gen_ai.usage.input_tokens"]),
+    outputTokens: toIntOrUndefined(attrs?.["gen_ai.usage.output_tokens"]),
   };
-}
-
-/**
- * Pick the root span for the hero summary. Prefer the one without a parent
- * inside this trace. If every span has a parent (e.g. orphaned trees) fall
- * back to the earliest span.
- */
-function pickRootSpan(spans: ParsedSpan[]): ParsedSpan | undefined {
-  if (spans.length === 0) return undefined;
-  const ids = new Set(spans.map((s) => s.spanId));
-  const root = spans.find(
-    (s) => !s.parentSpanId || !ids.has(s.parentSpanId)
-  );
-  if (root) return root;
-  return spans.slice().sort((a, b) => a.startMs - b.startMs)[0];
 }
 
 function toNumberOrUndefined(value: unknown): number | undefined {
