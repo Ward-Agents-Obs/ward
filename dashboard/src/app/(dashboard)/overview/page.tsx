@@ -35,7 +35,10 @@ import {
   LatencyChart,
   SpansByModelChart,
 } from "./charts";
-import { TimeRangePicker } from "./time-range-picker";
+import {
+  DEFAULT_TIME_RANGE_OPTIONS,
+  TimeRangePicker,
+} from "@/components/ui/time-range-picker";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -159,7 +162,11 @@ export default async function OverviewPage({
               Tenant health snapshot for the {RANGE_LABEL[range]}.
             </p>
           </div>
-          <TimeRangePicker active={range} />
+          <TimeRangePicker
+            value={range}
+            options={DEFAULT_TIME_RANGE_OPTIONS}
+            paramName="range"
+          />
         </div>
       </div>
 

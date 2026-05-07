@@ -7,6 +7,10 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import {
+  DEFAULT_TIME_RANGE_OPTIONS,
+  TimeRangePicker,
+} from "@/components/ui/time-range-picker";
 
 /**
  * Filter chip row for `/traces`. URL-state across the board so deep links
@@ -26,13 +30,6 @@ import { Button } from "@/components/ui/button";
  * the page layout so the parent can pass us `view` and we can hide what
  * doesn't apply.
  */
-
-const TIME_RANGES = [
-  { value: "1h", label: "1h" },
-  { value: "24h", label: "24h" },
-  { value: "7d", label: "7d" },
-  { value: "30d", label: "30d" },
-] as const;
 
 const STATUS_OPTIONS = [
   { value: "", label: "All statuses" },
@@ -119,33 +116,18 @@ export function TraceFilters({
 
   return (
     <div className={cn("space-y-4", className)}>
-      {/* Time range chips */}
-      <div
-        role="radiogroup"
-        aria-label="Time range"
-        className="inline-flex items-center gap-1 rounded-xl border tech-border bg-panel p-1"
-      >
-        {TIME_RANGES.map((range) => {
-          const isActive = current.timeRange === range.value;
-          return (
-            <button
-              key={range.value}
-              type="button"
-              role="radio"
-              aria-checked={isActive}
-              onClick={() => update({ timeRange: range.value })}
-              className={cn(
-                "inline-flex h-8 items-center rounded-lg px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                isActive
-                  ? "bg-foreground text-background shadow-sm"
-                  : "text-muted-foreground hover:bg-panel-hover hover:text-foreground"
-              )}
-            >
-              {range.label}
-            </button>
-          );
-        })}
-      </div>
+      {/*
+        `current.timeRange` is read raw from `searchParams` for filter UI; the
+        page (`traces/page.tsx`) does the canonical validation via `parseRange`
+        before any query runs. Passing the unvalidated string here means the
+        picker simply highlights no chip if the URL value is junk — same UX
+        as our other filters and matches the hand-rolled chips this replaces.
+      */}
+      <TimeRangePicker
+        value={current.timeRange}
+        options={DEFAULT_TIME_RANGE_OPTIONS}
+        paramName="timeRange"
+      />
 
       {/* Search + dropdowns */}
       <div className="flex flex-wrap items-center gap-3">

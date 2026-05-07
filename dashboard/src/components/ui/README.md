@@ -24,15 +24,17 @@ sweep, not a flag-day rewrite.
 | `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell` | `table.tsx` | Tokens-driven table set. |
 | `Tabs`, `TabsList`, `TabsTrigger`, `TabsContent` | `tabs.tsx` | Controlled-only API matching Radix. |
 | `Dialog`, `DialogContent`, `DialogHeader`, `DialogTitle`, `DialogDescription`, `DialogFooter` | `dialog.tsx` | Portal modal with focus trap, Escape, overlay close. |
+| `TimeRangePicker`, `DEFAULT_TIME_RANGE_OPTIONS` | `time-range-picker.tsx` | URL-state segmented selector. Generic over option-value type, configurable `paramName`, resets `?page=` on change. |
 | `ToastProvider`, `Toaster`, `useToast` | `toast.tsx` | Context-driven; mount `Toaster` at the dashboard layout root. |
 
 ## Conventions
 
 - Every primitive uses the design tokens from `globals.css`
   (`--background`, `--foreground`, `--panel`, `--border`, `--accent`,
-  `--muted`, `--destructive`, `--ring`). No hex literals, no zinc/neutral
-  Tailwind classes — those are the legacy palette and shouldn't appear in new
-  code.
+  `--muted`, `--destructive`, `--success`, `--ring`). No hex literals, no
+  zinc/neutral Tailwind classes — those are the legacy palette and shouldn't
+  appear in new code. Status pills use `bg-destructive/10 text-destructive`
+  for danger / `bg-success/10 text-success` for ok.
 - Variant systems use `class-variance-authority` (already a top-level dep).
   Do not introduce variant logic via inline ternaries in callers.
 - Forwarded refs everywhere we expose an HTML element. shadcn parity.
@@ -174,6 +176,36 @@ export function TraceModeToggle() {
   );
 }
 ```
+
+### TimeRangePicker
+
+```tsx
+import {
+  TimeRangePicker,
+  DEFAULT_TIME_RANGE_OPTIONS,
+} from "@/components/ui/time-range-picker";
+
+// Standard 1h / 24h / 7d / 30d range, writes to ?range=
+<TimeRangePicker value={range} options={DEFAULT_TIME_RANGE_OPTIONS} />
+
+// Custom param name + option set (e.g. monitor windows)
+<TimeRangePicker
+  value={window}
+  paramName="window"
+  ariaLabel="Window"
+  options={[
+    { value: "5m", label: "5m" },
+    { value: "15m", label: "15m" },
+    { value: "1h", label: "1h" },
+    { value: "6h", label: "6h" },
+    { value: "24h", label: "24h" },
+  ]}
+/>
+```
+
+The component is a server-friendly Link-based segmented control. The page
+validates the URL value before passing it as `value`; the picker just
+highlights or doesn't, never throws.
 
 ### Card
 

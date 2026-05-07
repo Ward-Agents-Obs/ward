@@ -22,14 +22,9 @@ interface ApiKeyRow {
 
 /**
  * API key list table for `/settings/keys`. Migrated to V1 ui primitives as
- * part of #43 (styling-drift sweep). Behaviour unchanged from V1.0; tokens
- * + components consolidated.
- *
- * Status pills use `--destructive` for "Revoked" (resolved by globals.css)
- * and an emerald accent for "Active" — emerald isn't a Ward design token,
- * but it's the universally-understood "ok" colour and there's no semantic
- * `--success` token in the palette. If we add one later this is a one-line
- * swap.
+ * part of #43 (styling-drift sweep). Status pills use the `--destructive`
+ * and `--success` design tokens from `globals.css` — both resolve correctly
+ * in light and dark mode.
  */
 export function ApiKeyTable({
   keys,
@@ -80,7 +75,7 @@ export function ApiKeyTable({
             </TableCell>
             <TableCell>
               {key.active ? (
-                <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-500">
+                <span className="inline-flex items-center rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
                   Active
                 </span>
               ) : (

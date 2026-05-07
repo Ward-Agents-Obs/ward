@@ -56,8 +56,8 @@ export function MetricCard({
             <span
               className={cn(
                 "inline-flex items-center gap-0.5 font-medium",
-                isGood && "text-emerald-500",
-                isBad && "text-rose-500",
+                isGood && "text-success",
+                isBad && "text-destructive",
                 !isGood && !isBad && "text-muted-foreground"
               )}
             >
