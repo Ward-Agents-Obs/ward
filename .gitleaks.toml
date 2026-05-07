@@ -70,6 +70,12 @@ paths = [
   '''(^|/)\.agents/tenant-isolation-audit\.md$''',
   # Egg-info / package metadata
   '''(^|/)src/ward_sdk\.egg-info(/|$)''',
+  # Regression-fixture suite (#42). Synthetic positives + negatives that
+  # exercise the rules in this file; the dedicated runner
+  # `scripts/run-gitleaks-fixtures.sh` (also wired into the secret-scan
+  # workflow) scans them deliberately. Excluding the path here keeps the
+  # main PR / push / weekly history scan from firing on every fixture.
+  '''(^|/)gitleaks-fixtures/''',
 ]
 
 # Stopwords are matched against the leak's `Match` content (i.e. the full
