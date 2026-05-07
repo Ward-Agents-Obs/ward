@@ -3,6 +3,30 @@
 import { clickhouse } from "@/lib/clickhouse";
 import { requireTenantId } from "@/lib/org";
 
+/**
+ * Time-range tokens accepted by overview queries that bucket their output
+ * across time. Maps to (window-size, bucket-size) pairs picked to keep each
+ * series at roughly 50–60 buckets so the frontend can render lines without
+ * over- or under-sampling.
+ */
+export type OverviewTimeRange = "1h" | "24h" | "7d" | "30d";
+
+interface RangeConfig {
+  hours: number;
+  bucketSeconds: number;
+}
+
+const RANGE_CONFIG: Record<OverviewTimeRange, RangeConfig> = {
+  "1h": { hours: 1, bucketSeconds: 60 }, // 60 × 1-min buckets
+  "24h": { hours: 24, bucketSeconds: 60 * 30 }, // 48 × 30-min buckets
+  "7d": { hours: 24 * 7, bucketSeconds: 60 * 60 * 3 }, // 56 × 3-hour buckets
+  "30d": { hours: 24 * 30, bucketSeconds: 60 * 60 * 12 }, // 60 × 12-hour buckets
+};
+
+function resolveRange(range: OverviewTimeRange | undefined): RangeConfig {
+  return RANGE_CONFIG[range ?? "24h"];
+}
+
 export async function getOverviewMetrics(tenantId: string) {
   const resolvedTenantId = requireTenantId(tenantId);
   const result = await clickhouse.query({
@@ -71,4 +95,227 @@ export async function getCostByModel(tenantId: string, days: number = 7) {
     format: "JSONEachRow",
   });
   return result.json<{ model: string; cost: string }>();
+}
+
+// ---------------------------------------------------------------------------
+// V1.B — bucketed health metrics
+// ---------------------------------------------------------------------------
+
+export interface LatencyPercentileBucket {
+  bucket: string;
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+/**
+ * Latency p50/p95/p99 in milliseconds, bucketed across the requested window.
+ *
+ * Filters to GenAI spans (those with `gen_ai.request.model` set) so non-LLM
+ * spans don't pollute the percentile distribution. Returns one row per bucket
+ * that contains at least one matching span — empty buckets are omitted, and
+ * the response is `[]` when no data exists for the tenant.
+ */
+export async function getLatencyPercentiles(
+  tenantId: string,
+  timeRange?: OverviewTimeRange,
+): Promise<LatencyPercentileBucket[]> {
+  const resolvedTenantId = requireTenantId(tenantId);
+  const { hours, bucketSeconds } = resolveRange(timeRange);
+
+  const result = await clickhouse.query({
+    query: `
+      SELECT
+        toString(toStartOfInterval(Timestamp, INTERVAL {bucketSeconds:UInt32} SECOND)) as bucket,
+        quantile(0.50)(Duration / 1000000) as p50,
+        quantile(0.95)(Duration / 1000000) as p95,
+        quantile(0.99)(Duration / 1000000) as p99
+      FROM otel_traces
+      WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        AND SpanAttributes['gen_ai.request.model'] != ''
+        AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
+      GROUP BY bucket
+      ORDER BY bucket
+    `,
+    query_params: { tenantId: resolvedTenantId, hours, bucketSeconds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    bucket: string;
+    p50: number;
+    p95: number;
+    p99: number;
+  }>();
+
+  return rows.map((row) => ({
+    bucket: row.bucket,
+    p50: Number(row.p50) || 0,
+    p95: Number(row.p95) || 0,
+    p99: Number(row.p99) || 0,
+  }));
+}
+
+export interface ErrorRateBucket {
+  bucket: string;
+  total: number;
+  errors: number;
+  errorRate: number; // 0..1
+}
+
+/**
+ * Per-bucket error rate (errors / total) across the requested window.
+ *
+ * Considers only GenAI spans. `errorRate` is a Float64 in [0, 1]; the caller
+ * should multiply by 100 for display. Returns `[]` when no spans matched.
+ */
+export async function getErrorRateOverTime(
+  tenantId: string,
+  timeRange?: OverviewTimeRange,
+): Promise<ErrorRateBucket[]> {
+  const resolvedTenantId = requireTenantId(tenantId);
+  const { hours, bucketSeconds } = resolveRange(timeRange);
+
+  const result = await clickhouse.query({
+    query: `
+      SELECT
+        toString(toStartOfInterval(Timestamp, INTERVAL {bucketSeconds:UInt32} SECOND)) as bucket,
+        count() as total,
+        countIf(StatusCode = 'Error') as errors,
+        countIf(StatusCode = 'Error') / count() as errorRate
+      FROM otel_traces
+      WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        AND SpanAttributes['gen_ai.request.model'] != ''
+        AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
+      GROUP BY bucket
+      ORDER BY bucket
+    `,
+    query_params: { tenantId: resolvedTenantId, hours, bucketSeconds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    bucket: string;
+    total: string;
+    errors: string;
+    errorRate: number;
+  }>();
+
+  return rows.map((row) => ({
+    bucket: row.bucket,
+    total: parseInt(row.total, 10) || 0,
+    errors: parseInt(row.errors, 10) || 0,
+    errorRate: Number(row.errorRate) || 0,
+  }));
+}
+
+export interface RecentFailure {
+  traceId: string;
+  spanId: string;
+  timestamp: string;
+  spanName: string;
+  model: string;
+  statusMessage: string;
+  latencyMs: number;
+}
+
+/**
+ * Most recent failed GenAI spans for the tenant. Used by the overview's
+ * "recent failures" table. Limit is clamped to 100 to avoid runaway queries
+ * if a caller passes something pathological.
+ */
+export async function getRecentFailures(
+  tenantId: string,
+  limit: number = 5,
+): Promise<RecentFailure[]> {
+  const resolvedTenantId = requireTenantId(tenantId);
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit) || 5));
+
+  const result = await clickhouse.query({
+    query: `
+      SELECT
+        TraceId as traceId,
+        SpanId as spanId,
+        toString(Timestamp) as timestamp,
+        SpanName as spanName,
+        SpanAttributes['gen_ai.request.model'] as model,
+        StatusMessage as statusMessage,
+        Duration / 1000000 as latencyMs
+      FROM otel_traces
+      WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        AND StatusCode = 'Error'
+      ORDER BY Timestamp DESC, SpanId DESC
+      LIMIT {limit:UInt32}
+    `,
+    query_params: { tenantId: resolvedTenantId, limit: safeLimit },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    traceId: string;
+    spanId: string;
+    timestamp: string;
+    spanName: string;
+    model: string;
+    statusMessage: string;
+    latencyMs: number;
+  }>();
+
+  return rows.map((row) => ({
+    traceId: row.traceId,
+    spanId: row.spanId,
+    timestamp: row.timestamp,
+    spanName: row.spanName,
+    model: row.model,
+    statusMessage: row.statusMessage,
+    latencyMs: Number(row.latencyMs) || 0,
+  }));
+}
+
+export interface SpansByModelBucket {
+  bucket: string;
+  model: string;
+  spans: number;
+}
+
+/**
+ * Span counts bucketed by (time, model) for the stacked-area chart on the
+ * overview page. Only GenAI spans are included. Frontend should pivot the
+ * flat (bucket, model, spans) rows into one series per model.
+ */
+export async function getSpansOverTimeByModel(
+  tenantId: string,
+  timeRange?: OverviewTimeRange,
+): Promise<SpansByModelBucket[]> {
+  const resolvedTenantId = requireTenantId(tenantId);
+  const { hours, bucketSeconds } = resolveRange(timeRange);
+
+  const result = await clickhouse.query({
+    query: `
+      SELECT
+        toString(toStartOfInterval(Timestamp, INTERVAL {bucketSeconds:UInt32} SECOND)) as bucket,
+        SpanAttributes['gen_ai.request.model'] as model,
+        count() as spans
+      FROM otel_traces
+      WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        AND SpanAttributes['gen_ai.request.model'] != ''
+        AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
+      GROUP BY bucket, model
+      ORDER BY bucket, model
+    `,
+    query_params: { tenantId: resolvedTenantId, hours, bucketSeconds },
+    format: "JSONEachRow",
+  });
+
+  const rows = await result.json<{
+    bucket: string;
+    model: string;
+    spans: string;
+  }>();
+
+  return rows.map((row) => ({
+    bucket: row.bucket,
+    model: row.model,
+    spans: parseInt(row.spans, 10) || 0,
+  }));
 }
