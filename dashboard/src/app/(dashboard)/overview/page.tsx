@@ -13,9 +13,11 @@ import { MetricCard } from "@/components/metric-card";
 import { SdkOnboarding } from "@/components/sdk-onboarding";
 import {
   getCostByModel,
+  getCostOverTime,
   getErrorRateOverTime,
   getLatencyPercentiles,
   getOverviewMetrics,
+  getOverviewMetricsDelta,
   getRecentFailures,
   getSpansOverTimeByModel,
   type OverviewTimeRange,
@@ -35,7 +37,6 @@ import {
   ErrorRateChart,
   LatencyChart,
   SpansByModelChart,
-  type CostOverTimeBucket,
 } from "./charts";
 import {
   DEFAULT_TIME_RANGE_OPTIONS,
@@ -131,19 +132,33 @@ export default async function OverviewPage({
    */
   const [
     metrics,
+    deltas24h,
+    deltasRange,
     latency,
     errorRate,
     spansByModel,
     costByModel,
+    costOverTime,
     recentFailures,
     environments,
     activeKeyCount,
   ] = await Promise.all([
     getOverviewMetrics(org.tenantId, envFilter),
+    // Two delta calls so each KPI's delta matches the window its value
+    // describes (architect's design: "delta refers to the same population
+    // the KPI tile shows"). The 24h call covers spans/cost/avgLatency
+    // because `getOverviewMetrics` is fixed at 24h; the range-driven call
+    // covers errorRate because the error-rate KPI is computed from the
+    // bucketed `errorRate` aggregate below, which respects the picker.
+    // When `range === "24h"` both return identical data — the duplicate
+    // round-trip is cheap enough not to dedupe.
+    getOverviewMetricsDelta(org.tenantId, "24h", "24h", envFilter),
+    getOverviewMetricsDelta(org.tenantId, range, range, envFilter),
     getLatencyPercentiles(org.tenantId, range, envFilter),
     getErrorRateOverTime(org.tenantId, range, envFilter),
     getSpansOverTimeByModel(org.tenantId, range, envFilter),
     getCostByModel(org.tenantId, rangeToDays(range), envFilter),
+    getCostOverTime(org.tenantId, range, envFilter),
     getRecentFailures(org.tenantId, 5, envFilter),
     getDistinctEnvironments(org.tenantId),
     prisma.apiKey.count({ where: { orgId: org.id, active: true } }),
@@ -172,51 +187,6 @@ export default async function OverviewPage({
     .map((row) => ({ model: row.model, cost: parseFloat(row.cost) || 0 }))
     .filter((row) => row.model)
     .slice(0, 5);
-
-  /**
-   * Per-bucket cost data for the §V1.B "Cost over time" line chart.
-   *
-   * TODO(#40-backend): when backend lands B13 — `getCostOverTime(tenantId,
-   * range)` returning `{ bucket: string; cost: number }[]` bucketed against
-   * the same `RANGE_CONFIG` used by the latency / error-rate queries — add
-   * the call to the `Promise.all` above and assign its result here. Until
-   * then the chart renders an explicit empty-state pointer at #40 so the
-   * panel doesn't masquerade as "no spend" when in fact we just haven't
-   * shipped the query.
-   */
-  const costOverTime: CostOverTimeBucket[] = [];
-
-  /**
-   * KPI prev-window deltas. All NULL for V1.0 because backend's #39 (B12)
-   * hasn't landed the parameterised + delta query yet. The MetricCard
-   * component already supports `delta` + `goodDirection` (wired in F1
-   * anticipating this), so the swap-in is body-only on this file.
-   *
-   * TODO(#39-backend): when #39 lands, replace the four `null` initialisers
-   * below with values from a `getOverviewMetricsDelta(tenantId, range)` (or
-   * equivalent) call returning signed percentages — positive = up vs prev
-   * window, negative = down. Then drop the `caption="last 24h"` props on
-   * the four MetricCards below so the delta arrow + range carry the
-   * meaning instead.
-   *
-   * `goodDirection` is already set per metric below: `up` for total spans
-   * (more traffic = healthier); `down` for total cost / avg latency /
-   * error rate (less spend, faster, fewer failures = better). Setting it
-   * upfront has no visual effect today (MetricCard only colours the arrow
-   * when a delta exists) and means landing the deltas needs zero further
-   * direction tweaks.
-   */
-  const deltas: {
-    totalSpans: number | null;
-    totalCost: number | null;
-    avgLatency: number | null;
-    errorRate: number | null;
-  } = {
-    totalSpans: null,
-    totalCost: null,
-    avgLatency: null,
-    errorRate: null,
-  };
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 lg:px-10 lg:py-10">
@@ -249,27 +219,29 @@ export default async function OverviewPage({
         </div>
       </div>
 
-      {/* KPI tiles
-        * `getOverviewMetrics` is fixed at 24h on the backend today — KPIs
-        * therefore reflect a 24-hour window regardless of the picker. The
-        * caption labels each tile so the inconsistency vs. the charts below
-        * is honest. Backend follow-up: parameterise the query and add a
-        * prev-window-delta companion for true delta arrows.
-        */}
+      {/* KPI tiles. Spans/Cost/AvgLatency reflect a 24h window (since
+        * `getOverviewMetrics` is 24h-fixed) and pair with the 24h delta.
+        * Error rate is range-aware (computed from the bucketed errorRate
+        * aggregate below) and pairs with the range-aware delta so its
+        * "vs prior" comparison tracks the picker. `caption` shows when no
+        * delta is available (fresh tenant); `deltaLabel` overrides the
+        * caption alongside the arrow when one is. */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard
           title="Total spans"
           value={formatNumber(metrics.totalSpans)}
           icon={Activity}
           caption="last 24h"
-          delta={deltas.totalSpans ?? undefined}
+          delta={deltas24h.totalSpans ?? undefined}
+          deltaLabel="vs prior 24h"
         />
         <MetricCard
           title="Total cost"
           value={formatCost(metrics.totalCost)}
           icon={DollarSign}
           caption="last 24h"
-          delta={deltas.totalCost ?? undefined}
+          delta={deltas24h.totalCost ?? undefined}
+          deltaLabel="vs prior 24h"
           goodDirection="down"
         />
         <MetricCard
@@ -277,7 +249,8 @@ export default async function OverviewPage({
           value={formatLatency(metrics.avgLatencyMs)}
           icon={Clock}
           caption="last 24h"
-          delta={deltas.avgLatency ?? undefined}
+          delta={deltas24h.avgLatency ?? undefined}
+          deltaLabel="vs prior 24h"
           goodDirection="down"
         />
         <MetricCard
@@ -285,7 +258,8 @@ export default async function OverviewPage({
           value={`${errorPct.toFixed(2)}%`}
           icon={AlertTriangle}
           caption={RANGE_LABEL[range]}
-          delta={deltas.errorRate ?? undefined}
+          delta={deltasRange.errorRate ?? undefined}
+          deltaLabel={`vs prior ${RANGE_LABEL[range].replace("last ", "")}`}
           goodDirection="down"
         />
       </section>
