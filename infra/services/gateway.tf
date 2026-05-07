@@ -23,6 +23,11 @@ resource "aws_ecs_task_definition" "gateway" {
       { name = "COLLECTOR_ADDR", value = "http://collector.${var.project_name}.local:4318" },
       { name = "REDIS_ADDR", value = "redis.${var.project_name}.local:6379" },
       { name = "DEFAULT_RATE_LIMIT", value = tostring(var.gateway_default_rate_limit) },
+      # Shared secret with the otel-collector's bearertokenauth extension.
+      # The gateway refuses to start without it (#25). Today plumbed via env;
+      # #35 migrates this and `clickhouse_password` to ECS `secrets` array
+      # sourced from AWS Secrets Manager.
+      { name = "COLLECTOR_AUTH_TOKEN", value = var.collector_auth_token },
     ]
 
     logConfiguration = {

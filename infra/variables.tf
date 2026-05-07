@@ -99,6 +99,22 @@ variable "clickhouse_password" {
   sensitive   = true
 }
 
+variable "collector_auth_token" {
+  description = <<-EOT
+    Shared bearer-token secret between the Go gateway and the OTel Collector
+    (defense-in-depth on the collector socket — see #25 / `.agents/tenant-
+    isolation-audit.md`). Both task definitions read this from
+    COLLECTOR_AUTH_TOKEN and refuse to start without it.
+
+    Generate with `openssl rand -hex 32`. **Operational note:** today this
+    value is plumbed via the ECS task definition `environment` array, which
+    matches how `clickhouse_password` ships. #35 will migrate both to the
+    ECS `secrets` array sourced from AWS Secrets Manager.
+  EOT
+  type      = string
+  sensitive = true
+}
+
 variable "domain_name" {
   description = "Domain name for the gateway (e.g. ingest.ward.dev). Leave empty to skip DNS."
   type        = string

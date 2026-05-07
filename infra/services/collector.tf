@@ -43,6 +43,10 @@ resource "aws_ecs_task_definition" "collector" {
       { name = "CLICKHOUSE_DATABASE", value = "default" },
       { name = "CLICKHOUSE_USERNAME", value = "otel" },
       { name = "CLICKHOUSE_PASSWORD", value = var.clickhouse_password },
+      # Must match the gateway's COLLECTOR_AUTH_TOKEN. The bearertokenauth
+      # extension verifies inbound OTLP requests against this value (#25).
+      # See `clickhouse_password` note above re: #35 secrets-manager migration.
+      { name = "COLLECTOR_AUTH_TOKEN", value = var.collector_auth_token },
     ]
 
     logConfiguration = {
