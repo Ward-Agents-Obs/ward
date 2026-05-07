@@ -157,6 +157,32 @@ This starts:
 
 A pre-built LLM Traces dashboard is provisioned automatically at [http://localhost:3000](http://localhost:3000).
 
+## Production deployment
+
+The local Compose file ships with deliberately weak defaults (`otelpass`, `postgres`, `admin`) so that `docker compose up` Just Works for new contributors. **Every credential is pulled in via `${VAR:-default}` substitution, so production deploys can override every default by sourcing a different env file** — without touching `docker-compose.yaml`. See `.env.example` for the canonical list and per-variable comments.
+
+### Required overrides for any non-local deploy
+
+| Variable | Notes |
+|---|---|
+| `COLLECTOR_AUTH_TOKEN` | **Already required.** Both gateway and collector refuse to start without it. Generate fresh: `openssl rand -hex 32`. |
+| `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | The dashboard's `lib/clickhouse.ts` hard-fails at module load if either is missing — no compiled-in fallback. |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Match the values referenced by `DATABASE_URL` below. |
+| `DATABASE_URL` | Either a DSN that points at the in-stack `postgres` service or an external Postgres (Supabase, RDS). The dashboard's Prisma client and the gateway's API-key hydrate (#26) both read this. |
+| `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD` | The default `admin/admin` would be an obvious initial-foothold gift to anyone scanning :3000 in any deploy that exposes it. |
+
+### Suggested invocation
+
+Keep production secrets in a separate file (e.g. `.env.production`, gitignored or sourced from a secrets manager) and pass it explicitly:
+
+```bash
+docker compose --env-file .env.production up -d
+```
+
+Compose's `${VAR:-default}` syntax keeps the defaults active when the override is empty, so a partially-populated env file silently uses dev creds for anything you forgot. **For prod, ensure every variable in the table above is present in `.env.production`** — the smoke test is `docker compose config --env-file .env.production` and grepping for any of `otelpass`, `postgres`, `admin` in the rendered output.
+
+V1.1 (#34, #35) will move the credential plumbing through AWS Secrets Manager / ECS `secrets` arrays so nothing rides on the env-file pattern in the cloud deploy. Until then, `--env-file` is the supported path.
+
 ## Configuration
 
 ### `ward.init()` parameters
