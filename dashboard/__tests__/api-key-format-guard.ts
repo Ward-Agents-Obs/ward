@@ -75,12 +75,12 @@ function checkHashShape() {
 
 function checkPrefixContract() {
   console.log("\n# keyPrefix slice convention (`plain.slice(0, 12) + '...'`)");
-  // The dashboard's prefix shape is documented in `api-keys.ts:9`. The
-  // gateway seeder uses `plain[:11]` (11 raw chars, no ellipsis) per
-  // `.agents/seed-and-key-mirror-design.md` §2 — different shape on
-  // purpose. We only assert the dashboard's own contract here; the Go
-  // side has its own slice convention covered by code review and the
-  // operator's eyes on the seed CLI output.
+  // The dashboard's prefix shape is documented in `api-keys.ts:9` and the
+  // gateway seeder matches it byte-for-byte (`plain[:12] + "..."` in
+  // `gateway/cmd/seed/main.go`) so `/settings/keys` renders both sources
+  // with identical column shapes. We assert the dashboard's contract
+  // here; the Go side's matching slice is covered by code review against
+  // this same comment block.
   const { plain, prefix } = generateApiKey();
   assert(
     prefix === plain.slice(0, 12) + "...",
