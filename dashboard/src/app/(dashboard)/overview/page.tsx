@@ -31,10 +31,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  CostByModelBars,
+  CostOverTimeChart,
   ErrorRateChart,
   LatencyChart,
   SpansByModelChart,
+  type CostOverTimeBucket,
 } from "./charts";
 import {
   DEFAULT_TIME_RANGE_OPTIONS,
@@ -116,23 +117,17 @@ export default async function OverviewPage({
 
   const range = parseRange(query.range);
   const environment = parseEnvironment(query.environment);
+  // Coerce empty string → undefined so each query treats "no filter"
+  // uniformly. `parseEnvironment` already returns "" for invalid/missing
+  // input, so this is the only place we need to translate.
+  const envFilter = environment || undefined;
 
   /**
    * Parallel fetch. Each query is tenant-scoped via the shared
-   * `requireTenantId()` guard inside `lib/queries/overview.ts`. A single
+   * `requireTenantId()` guard inside `lib/queries/overview.ts` and now
+   * additionally honours an optional `environment` filter. A single
    * ClickHouse outage takes down the whole page; the route-group
    * `error.tsx` boundary surfaces a recoverable card per AGENTS.MD §5.3.
-   *
-   * TODO(#41-backend): when backend lands B14 — environment filter on
-   * overview queries — pass `environment` to each call below so the
-   * dashboard actually filters by the user's selection. Until then the UI
-   * controls write to `?environment=` and the value round-trips through
-   * the URL, but every query still operates over all environments. Backend
-   * spec is in task #41 and `.agents/v1-scope.md` §V1.B. Concretely each
-   * call gains an optional `environment?: string` arg that, when set,
-   * appends `AND ResourceAttributes['deployment.environment'] = {env:String}`
-   * to the WHERE clause. `getDistinctEnvironments` already populates the
-   * dropdown; only the data fetches are pending.
    */
   const [
     metrics,
@@ -144,25 +139,15 @@ export default async function OverviewPage({
     environments,
     activeKeyCount,
   ] = await Promise.all([
-    // TODO(#41-backend): pass `environment` once #41 lands.
-    getOverviewMetrics(org.tenantId),
-    // TODO(#41-backend): pass `environment` once #41 lands.
-    getLatencyPercentiles(org.tenantId, range),
-    // TODO(#41-backend): pass `environment` once #41 lands.
-    getErrorRateOverTime(org.tenantId, range),
-    // TODO(#41-backend): pass `environment` once #41 lands.
-    getSpansOverTimeByModel(org.tenantId, range),
-    // TODO(#41-backend): pass `environment` once #41 lands.
-    getCostByModel(org.tenantId, rangeToDays(range)),
-    // TODO(#41-backend): pass `environment` once #41 lands.
-    getRecentFailures(org.tenantId, 5),
+    getOverviewMetrics(org.tenantId, envFilter),
+    getLatencyPercentiles(org.tenantId, range, envFilter),
+    getErrorRateOverTime(org.tenantId, range, envFilter),
+    getSpansOverTimeByModel(org.tenantId, range, envFilter),
+    getCostByModel(org.tenantId, rangeToDays(range), envFilter),
+    getRecentFailures(org.tenantId, 5, envFilter),
     getDistinctEnvironments(org.tenantId),
     prisma.apiKey.count({ where: { orgId: org.id, active: true } }),
   ]);
-  // Touch `environment` so the lint doesn't complain while the value is
-  // round-tripping through the URL but isn't yet plumbed to the queries.
-  // Drop this `void` once #41-backend lands.
-  void environment;
 
   // Empty state: no spans at all means the user hasn't sent traces yet.
   // The §V1.B spec gates onboarding on `total_spans=0`. Use the SDK
@@ -187,6 +172,19 @@ export default async function OverviewPage({
     .map((row) => ({ model: row.model, cost: parseFloat(row.cost) || 0 }))
     .filter((row) => row.model)
     .slice(0, 5);
+
+  /**
+   * Per-bucket cost data for the §V1.B "Cost over time" line chart.
+   *
+   * TODO(#40-backend): when backend lands B13 — `getCostOverTime(tenantId,
+   * range)` returning `{ bucket: string; cost: number }[]` bucketed against
+   * the same `RANGE_CONFIG` used by the latency / error-rate queries — add
+   * the call to the `Promise.all` above and assign its result here. Until
+   * then the chart renders an explicit empty-state pointer at #40 so the
+   * panel doesn't masquerade as "no spend" when in fact we just haven't
+   * shipped the query.
+   */
+  const costOverTime: CostOverTimeBucket[] = [];
 
   /**
    * KPI prev-window deltas. All NULL for V1.0 because backend's #39 (B12)
@@ -313,14 +311,10 @@ export default async function OverviewPage({
           <ErrorRateChart data={errorRate} />
         </ChartCard>
         <ChartCard
-          title="Top models by cost"
-          description={
-            range === "1h" || range === "24h"
-              ? "Top spenders over the last 24 hours."
-              : `Top spenders over the ${RANGE_LABEL[range]}.`
-          }
+          title="Cost over time"
+          description={`Per-bucket spend in USD — ${RANGE_LABEL[range]}.`}
         >
-          <CostByModelBars data={topModels} />
+          <CostOverTimeChart data={costOverTime} />
         </ChartCard>
       </section>
 

@@ -262,45 +262,76 @@ export function ErrorRateChart({ data }: ErrorRateChartProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Cost by model — horizontal bars (placeholder for the §V1.B cost-over-time
-// line chart, which needs a per-bucket cost query backend hasn't shipped yet)
+// Cost-over-time line chart
 // ---------------------------------------------------------------------------
 
-interface CostByModelBarsProps {
-  data: { model: string; cost: number }[];
+export interface CostOverTimeBucket {
+  /** ClickHouse bucket string in `YYYY-MM-DD HH:MM:SS` form. */
+  bucket: string;
+  /** Total cost across the bucket window, in USD. */
+  cost: number;
 }
 
-export function CostByModelBars({ data }: CostByModelBarsProps) {
+interface CostOverTimeChartProps {
+  data: CostOverTimeBucket[];
+}
+
+/**
+ * Per-bucket cost line chart for the §V1.B "Cost over time" panel.
+ *
+ * V1 SCAFFOLD — the page currently feeds an empty array because backend's
+ * #40 (B13) hasn't landed `getCostOverTime(tenantId, range)`. With no data
+ * the chart renders the shared `<ChartEmpty>` placeholder explaining the
+ * pending swap. Once #40 ships, the page passes real rows and the line
+ * appears with no further changes here.
+ */
+export function CostOverTimeChart({ data }: CostOverTimeChartProps) {
   if (data.length === 0) {
-    return <ChartEmpty label="No spend in this window yet." />;
+    return (
+      <ChartEmpty label="Per-bucket cost arrives once backend task #40 (B13) lands." />
+    );
   }
-  const max = Math.max(...data.map((d) => d.cost), 0);
   return (
-    <div className="space-y-3">
-      {data.map((row, i) => {
-        const width = max > 0 ? Math.max(2, (row.cost / max) * 100) : 0;
-        return (
-          <div key={row.model} className="flex items-center gap-3 text-sm">
-            <span className="w-32 shrink-0 truncate font-mono text-xs text-foreground">
-              {row.model}
-            </span>
-            <div className="relative h-6 flex-1 overflow-hidden rounded-md bg-background">
-              <div
-                style={{
-                  width: `${width}%`,
-                  background: SERIES_COLORS[i % SERIES_COLORS.length],
-                }}
-                className="h-full opacity-90"
-              />
-            </div>
-            <span className="w-20 shrink-0 text-right font-medium tabular-nums text-foreground">
-              {row.cost < 0.01 ? `$${row.cost.toFixed(4)}` : `$${row.cost.toFixed(2)}`}
-            </span>
-          </div>
-        );
-      })}
+    <div className="h-64">
+      <ResponsiveContainer>
+        <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <XAxis
+            dataKey="bucket"
+            tickFormatter={shortBucket}
+            tick={AXIS_TICK}
+            minTickGap={24}
+          />
+          <YAxis
+            tick={AXIS_TICK}
+            tickFormatter={(v: number) => formatYAxisCost(v)}
+          />
+          <Tooltip
+            contentStyle={TOOLTIP_STYLE}
+            labelFormatter={shortBucket}
+            formatter={(value) => {
+              const num = typeof value === "number" ? value : Number(value) || 0;
+              return [formatYAxisCost(num), "Cost"];
+            }}
+          />
+          <Line
+            type="monotone"
+            dataKey="cost"
+            stroke="#34d399"
+            strokeWidth={1.75}
+            dot={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
+}
+
+/** Cost-axis labelling. Sub-cent resolution for tiny windows, $ for the rest. */
+function formatYAxisCost(v: number): string {
+  if (!Number.isFinite(v)) return "$0";
+  if (v < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,6 @@
 /**
- * B2 acceptance check — `getLatencyPercentiles`, `getErrorRateOverTime`,
- * `getRecentFailures`, and `getSpansOverTimeByModel` must return rows that
- * belong to the supplied tenant ID and *only* that tenant's data.
+ * B2 + B14 acceptance check — every overview query must scope to the
+ * supplied tenant ID and (when set) the supplied `environment` filter.
  *
  * No vitest in this repo yet. This script runs on its own and asserts the
  * tenant-scoping property by:
@@ -30,6 +29,7 @@ import { randomBytes } from "node:crypto";
 import {
   getErrorRateOverTime,
   getLatencyPercentiles,
+  getOverviewMetrics,
   getRecentFailures,
   getSpansOverTimeByModel,
 } from "../src/lib/queries/overview";
@@ -74,6 +74,8 @@ function makeSpan(opts: {
   durationMs: number;
   status: "Ok" | "Error";
   ageSeconds?: number;
+  /** Defaults to "production" — overridden in B14 tests to verify env filter. */
+  environment?: string;
 }): SyntheticSpan {
   const traceId = randomBytes(16).toString("hex");
   const spanId = randomBytes(8).toString("hex");
@@ -91,7 +93,7 @@ function makeSpan(opts: {
     ResourceAttributes: {
       "ward.tenant_id": opts.tenantId,
       "service.name": "wardtest-service",
-      "deployment.environment": "test",
+      "deployment.environment": opts.environment ?? "production",
     },
     ScopeName: "ward",
     ScopeVersion: "0.1.0",
@@ -110,9 +112,13 @@ function makeSpan(opts: {
 }
 
 async function insertFixtures() {
-  // Tenant A: 5 OK + 2 Error spans across two models.
-  // Tenant B: 4 OK spans on a different model. No errors at all.
-  // Different cardinality and status mix per tenant proves cross-leak loudly.
+  // Tenant A: 5 OK + 2 Error spans across two models, ALL tagged
+  // `production`. The B14 env filter test then asserts that asking for
+  // `environment=staging` returns zero rows for tenant A despite the
+  // tenant-scope check finding all 7 spans.
+  // Tenant B: 4 OK spans on a different model and a different env
+  // (`staging`). Distinct env + distinct model guarantees both
+  // tenant-scope and env-scope leaks would be visible.
   const rows: SyntheticSpan[] = [
     makeSpan({ tenantId: TENANT_A, model: "gpt-4o", durationMs: 200, status: "Ok", ageSeconds: 60 }),
     makeSpan({ tenantId: TENANT_A, model: "gpt-4o", durationMs: 350, status: "Ok", ageSeconds: 90 }),
@@ -122,10 +128,10 @@ async function insertFixtures() {
     makeSpan({ tenantId: TENANT_A, model: "gpt-4o", durationMs: 5000, status: "Error", ageSeconds: 30 }),
     makeSpan({ tenantId: TENANT_A, model: "gpt-4o-mini", durationMs: 600, status: "Error", ageSeconds: 45 }),
 
-    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 400, status: "Ok", ageSeconds: 50 }),
-    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 500, status: "Ok", ageSeconds: 100 }),
-    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 700, status: "Ok", ageSeconds: 150 }),
-    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 900, status: "Ok", ageSeconds: 200 }),
+    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 400, status: "Ok", ageSeconds: 50, environment: "staging" }),
+    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 500, status: "Ok", ageSeconds: 100, environment: "staging" }),
+    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 700, status: "Ok", ageSeconds: 150, environment: "staging" }),
+    makeSpan({ tenantId: TENANT_B, model: "claude-3-5-sonnet-20241022", durationMs: 900, status: "Ok", ageSeconds: 200, environment: "staging" }),
   ];
 
   await clickhouse.insert({
@@ -212,6 +218,56 @@ async function runChecks() {
     blankThrew = true;
   }
   assert(blankThrew, "blank tenant id throws via requireTenantId()");
+
+  // -------------------------------------------------------------------------
+  // B14 — environment filter regression check (#41).
+  //
+  // Tenant A's fixtures are all tagged `production`. We verify that every
+  // overview query honours the new optional `environment` argument:
+  //  - omitting the arg returns all 7 of A's spans (existing behaviour);
+  //  - passing 'production' returns the same 7 (filter matches);
+  //  - passing 'staging' returns ZERO rows for tenant A (filter excludes).
+  //
+  // If any query accepts the arg but ignores it (e.g. forgets to interpolate
+  // the `${envFilter}` fragment), the third group of assertions fails loudly.
+  // -------------------------------------------------------------------------
+  console.log("\n# B14 environment filter");
+
+  const aMetricsAll = await getOverviewMetrics(TENANT_A);
+  const aMetricsProd = await getOverviewMetrics(TENANT_A, "production");
+  const aMetricsStaging = await getOverviewMetrics(TENANT_A, "staging");
+  assert(aMetricsAll.totalSpans === 7, `A unfiltered: 7 total spans (got ${aMetricsAll.totalSpans})`);
+  assert(
+    aMetricsProd.totalSpans === aMetricsAll.totalSpans,
+    `A env=production matches unfiltered (got prod=${aMetricsProd.totalSpans} vs all=${aMetricsAll.totalSpans})`,
+  );
+  assert(
+    aMetricsStaging.totalSpans === 0,
+    `A env=staging returns 0 spans — A's spans are all production (got ${aMetricsStaging.totalSpans})`,
+  );
+
+  // Spot-check the bucketed queries with the same pattern. We only need one
+  // each to prove they apply the filter — the assertion that staging→empty
+  // catches a forgotten WHERE-clause interpolation in any of them.
+  const aLatStaging = await getLatencyPercentiles(TENANT_A, "1h", "staging");
+  assert(aLatStaging.length === 0, `A latency env=staging is empty (got ${aLatStaging.length} buckets)`);
+
+  const aErrStaging = await getErrorRateOverTime(TENANT_A, "1h", "staging");
+  assert(aErrStaging.length === 0, `A error rate env=staging is empty (got ${aErrStaging.length} buckets)`);
+
+  const aFailsProd = await getRecentFailures(TENANT_A, 10, "production");
+  const aFailsStaging = await getRecentFailures(TENANT_A, 10, "staging");
+  assert(aFailsProd.length === 2, `A failures env=production matches the 2 seeded errors (got ${aFailsProd.length})`);
+  assert(aFailsStaging.length === 0, `A failures env=staging is empty (got ${aFailsStaging.length})`);
+
+  const aModelsStaging = await getSpansOverTimeByModel(TENANT_A, "1h", "staging");
+  assert(aModelsStaging.length === 0, `A spans-by-model env=staging is empty (got ${aModelsStaging.length} rows)`);
+
+  // Cross-check: tenant B has all spans on `staging`, so env=production
+  // for tenant B should return zero. Confirms the filter isn't a no-op
+  // that always returns data.
+  const bMetricsProd = await getOverviewMetrics(TENANT_B, "production");
+  assert(bMetricsProd.totalSpans === 0, `B env=production is empty — B's spans are all staging (got ${bMetricsProd.totalSpans})`);
 }
 
 async function main() {

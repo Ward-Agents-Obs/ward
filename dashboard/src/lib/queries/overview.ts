@@ -27,8 +27,25 @@ function resolveRange(range: OverviewTimeRange | undefined): RangeConfig {
   return RANGE_CONFIG[range ?? "24h"];
 }
 
-export async function getOverviewMetrics(tenantId: string) {
+/**
+ * Build the optional environment WHERE-clause fragment. Returns an empty
+ * string when `environment` is null/undefined/empty, so callers can
+ * unconditionally interpolate it into their SQL template. The literal
+ * placeholder (`{environment:String}`) is parameterised — no string
+ * interpolation, no injection vector.
+ */
+function environmentFilter(environment: string | undefined | null): string {
+  return environment
+    ? "AND ResourceAttributes['deployment.environment'] = {environment:String}"
+    : "";
+}
+
+export async function getOverviewMetrics(
+  tenantId: string,
+  environment?: string,
+) {
   const resolvedTenantId = requireTenantId(tenantId);
+  const envFilter = environmentFilter(environment);
   const result = await clickhouse.query({
     query: `
       SELECT
@@ -38,9 +55,10 @@ export async function getOverviewMetrics(tenantId: string) {
         uniq(SpanAttributes['gen_ai.request.model']) as active_models
       FROM otel_traces
       WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
         AND Timestamp >= now() - INTERVAL 24 HOUR
     `,
-    query_params: { tenantId: resolvedTenantId },
+    query_params: { tenantId: resolvedTenantId, environment: environment ?? "" },
     format: "JSONEachRow",
   });
   const rows = await result.json<{
@@ -77,8 +95,13 @@ export async function getSpansOverTime(tenantId: string, days: number = 7) {
   return result.json<{ date: string; spans: string }>();
 }
 
-export async function getCostByModel(tenantId: string, days: number = 7) {
+export async function getCostByModel(
+  tenantId: string,
+  days: number = 7,
+  environment?: string,
+) {
   const resolvedTenantId = requireTenantId(tenantId);
+  const envFilter = environmentFilter(environment);
   const result = await clickhouse.query({
     query: `
       SELECT
@@ -86,12 +109,13 @@ export async function getCostByModel(tenantId: string, days: number = 7) {
         sum(toFloat64OrZero(SpanAttributes['gen_ai.usage.cost'])) as cost
       FROM otel_traces
       WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
         AND Timestamp >= now() - INTERVAL {days:UInt32} DAY
         AND SpanAttributes['gen_ai.request.model'] != ''
       GROUP BY model
       ORDER BY cost DESC
     `,
-    query_params: { tenantId: resolvedTenantId, days },
+    query_params: { tenantId: resolvedTenantId, days, environment: environment ?? "" },
     format: "JSONEachRow",
   });
   return result.json<{ model: string; cost: string }>();
@@ -119,9 +143,11 @@ export interface LatencyPercentileBucket {
 export async function getLatencyPercentiles(
   tenantId: string,
   timeRange?: OverviewTimeRange,
+  environment?: string,
 ): Promise<LatencyPercentileBucket[]> {
   const resolvedTenantId = requireTenantId(tenantId);
   const { hours, bucketSeconds } = resolveRange(timeRange);
+  const envFilter = environmentFilter(environment);
 
   const result = await clickhouse.query({
     query: `
@@ -132,12 +158,18 @@ export async function getLatencyPercentiles(
         quantile(0.99)(Duration / 1000000) as p99
       FROM otel_traces
       WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
         AND SpanAttributes['gen_ai.request.model'] != ''
         AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
       GROUP BY bucket
       ORDER BY bucket
     `,
-    query_params: { tenantId: resolvedTenantId, hours, bucketSeconds },
+    query_params: {
+      tenantId: resolvedTenantId,
+      hours,
+      bucketSeconds,
+      environment: environment ?? "",
+    },
     format: "JSONEachRow",
   });
 
@@ -172,9 +204,11 @@ export interface ErrorRateBucket {
 export async function getErrorRateOverTime(
   tenantId: string,
   timeRange?: OverviewTimeRange,
+  environment?: string,
 ): Promise<ErrorRateBucket[]> {
   const resolvedTenantId = requireTenantId(tenantId);
   const { hours, bucketSeconds } = resolveRange(timeRange);
+  const envFilter = environmentFilter(environment);
 
   const result = await clickhouse.query({
     query: `
@@ -185,12 +219,18 @@ export async function getErrorRateOverTime(
         countIf(StatusCode = 'Error') / count() as errorRate
       FROM otel_traces
       WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
         AND SpanAttributes['gen_ai.request.model'] != ''
         AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
       GROUP BY bucket
       ORDER BY bucket
     `,
-    query_params: { tenantId: resolvedTenantId, hours, bucketSeconds },
+    query_params: {
+      tenantId: resolvedTenantId,
+      hours,
+      bucketSeconds,
+      environment: environment ?? "",
+    },
     format: "JSONEachRow",
   });
 
@@ -227,9 +267,11 @@ export interface RecentFailure {
 export async function getRecentFailures(
   tenantId: string,
   limit: number = 5,
+  environment?: string,
 ): Promise<RecentFailure[]> {
   const resolvedTenantId = requireTenantId(tenantId);
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit) || 5));
+  const envFilter = environmentFilter(environment);
 
   const result = await clickhouse.query({
     query: `
@@ -243,11 +285,16 @@ export async function getRecentFailures(
         Duration / 1000000 as latencyMs
       FROM otel_traces
       WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
         AND StatusCode = 'Error'
       ORDER BY Timestamp DESC, SpanId DESC
       LIMIT {limit:UInt32}
     `,
-    query_params: { tenantId: resolvedTenantId, limit: safeLimit },
+    query_params: {
+      tenantId: resolvedTenantId,
+      limit: safeLimit,
+      environment: environment ?? "",
+    },
     format: "JSONEachRow",
   });
 
@@ -286,9 +333,11 @@ export interface SpansByModelBucket {
 export async function getSpansOverTimeByModel(
   tenantId: string,
   timeRange?: OverviewTimeRange,
+  environment?: string,
 ): Promise<SpansByModelBucket[]> {
   const resolvedTenantId = requireTenantId(tenantId);
   const { hours, bucketSeconds } = resolveRange(timeRange);
+  const envFilter = environmentFilter(environment);
 
   const result = await clickhouse.query({
     query: `
@@ -298,12 +347,18 @@ export async function getSpansOverTimeByModel(
         count() as spans
       FROM otel_traces
       WHERE ResourceAttributes['ward.tenant_id'] = {tenantId:String}
+        ${envFilter}
         AND SpanAttributes['gen_ai.request.model'] != ''
         AND Timestamp >= now() - INTERVAL {hours:UInt32} HOUR
       GROUP BY bucket, model
       ORDER BY bucket, model
     `,
-    query_params: { tenantId: resolvedTenantId, hours, bucketSeconds },
+    query_params: {
+      tenantId: resolvedTenantId,
+      hours,
+      bucketSeconds,
+      environment: environment ?? "",
+    },
     format: "JSONEachRow",
   });
 
