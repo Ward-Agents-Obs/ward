@@ -1,145 +1,190 @@
 "use server";
 
-// `next/cache`'s `revalidatePath` will be imported once the real Prisma
-// writes land (backend tasks #14/#15) — a stub action shouldn't call it.
-import { getOrCreateOrg, requireTenantId } from "@/lib/org";
+import { revalidatePath } from "next/cache";
+import { prisma } from "@/lib/prisma";
+import { getOrCreateOrg } from "@/lib/org";
 import {
-  type Monitor,
+  validateMonitorInput,
   type MonitorPreviewInput,
   type MonitorPreviewResult,
-  previewMonitorMetric,
-  validateMonitorInput,
+  type ValidationErrors,
 } from "@/lib/monitors";
+import { previewMonitorMetric } from "@/lib/monitors-server";
 
 /**
- * Server actions for the Create/Edit Monitor modal (F8 / task #19).
+ * Server actions backing the Create/Edit Monitor modal (F8) and any future
+ * row-level actions (toggle/delete) on the list page (F7).
  *
- * These are SCAFFOLD STUBS until backend lands #14 (Prisma models),
- * #15 (the canonical create/update/delete/toggle actions with zod), and
- * #17 (ClickHouse preview query). The shapes here mirror what the design
- * doc (`.agents/monitors-design.md` §5) specifies so the F8 form binds
- * against the real contract from day one — once the real implementation
- * lands, the bodies swap inside this file with no caller changes.
+ * Contract per `.agents/monitor-server-actions-design.md`:
+ *  - Result envelopes are **discriminated unions**, never throw for
+ *    expected failures (validation, not-found, cap, missing tenant).
+ *    Throw only for infra exceptions; the route-group `error.tsx`
+ *    boundary handles those.
+ *  - Tenant safety: `getOrCreateOrg()` derives `orgId` from the session.
+ *    Never accept `orgId` / `tenantId` from input.
+ *  - IDOR-safe writes: every mutation filters by `(id, orgId)` so a wrong-
+ *    tenant id surfaces as `not_found`, not a leaked update.
+ *  - ≤10-monitor cap is enforced by `prisma.monitor.count` inside
+ *    `createMonitor`. No DB unique constraint — V1.1 widens the cap and
+ *    a column constraint would be painful to migrate.
  *
- * Tenant safety pattern is already in place: every mutation calls
- * `getOrCreateOrg()` + `requireTenantId()` before doing anything else.
- * That guard stays even when this file is rewired.
+ * Coverage: `__tests__/monitor-actions-tenant-isolation.ts` exercises the
+ * IDOR property (cross-tenant lookups return null/empty) and the cap
+ * counting against a live Postgres.
  */
 
-export interface MonitorActionResult {
-  ok: boolean;
-  /** Field-keyed validation errors mirroring `validateMonitorInput`. */
-  errors?: Record<string, string>;
-  /** Single user-facing message for non-field errors (cap reached, missing tenant, etc.). */
-  message?: string;
-  monitor?: Monitor;
-}
+// ---------------------------------------------------------------------------
+// Result envelope types — exported so consumer components can import the
+// exact shape rather than re-deriving it.
+// ---------------------------------------------------------------------------
 
-/**
- * V1 STUB. Real impl (B8) will:
- *  1. Run `getOrCreateOrg()` + `requireTenantId()`.
- *  2. Parse with the canonical zod schema.
- *  3. Enforce the ≤10-monitors-per-tenant cap.
- *  4. `prisma.monitor.create({ data: { orgId, createdBy, ...input }})`.
- *  5. Return the new monitor; revalidate `/monitors`.
- */
-export async function createMonitor(raw: unknown): Promise<MonitorActionResult> {
+// User-facing copy for these typed tags lives in the consumers (e.g.
+// `<MonitorFormDialog>`'s `ERROR_COPY` const) — `"use server"` modules
+// can't export non-async values, only types.
+export type MonitorActionErrorTag = "no_tenant" | "not_found" | "limit_reached";
+
+export type CreateMonitorResult =
+  | { ok: true; id: string }
+  | { ok: false; errors: ValidationErrors }
+  | { ok: false; error: "limit_reached" | "no_tenant" };
+
+export type UpdateMonitorResult =
+  | { ok: true }
+  | { ok: false; errors: ValidationErrors }
+  | { ok: false; error: "not_found" | "no_tenant" };
+
+export type DeleteMonitorResult =
+  | { ok: true }
+  | { ok: false; error: "not_found" | "no_tenant" };
+
+export type ToggleMonitorResult = DeleteMonitorResult;
+
+// ---------------------------------------------------------------------------
+// Mutations
+// ---------------------------------------------------------------------------
+
+export async function createMonitor(raw: unknown): Promise<CreateMonitorResult> {
   const org = await getOrCreateOrg();
-  if (!org) {
-    return { ok: false, message: "Tenant context unavailable. Sign out and back in." };
-  }
-  // Touch tenantId for the same-shape parity check the real action will do
-  // before any Prisma write — keeps the `requireTenantId()` invariant on the
-  // mutation path even though the body is a no-op stub today.
-  void requireTenantId(org.tenantId);
+  if (!org) return { ok: false, error: "no_tenant" };
 
   const validation = await validateMonitorInput(raw);
-  if (!validation.ok) {
+  if (!validation.ok || !validation.value) {
     return { ok: false, errors: validation.errors };
   }
 
-  return {
-    ok: false,
-    message:
-      "Monitor creation isn't wired up yet — backend tasks #14 (Prisma model) and #15 (server actions) are pending. Form validation and preview wiring are live so you can shake out UX.",
-  };
+  // Cap check. Read-then-write is racy in theory (two concurrent creates
+  // could both see count=9 and both insert), but the cap is generous
+  // enough that briefly exceeding it by one is fine. Adding a partial
+  // unique index would be V1.1 hardening.
+  const count = await prisma.monitor.count({ where: { orgId: org.id } });
+  if (count >= 10) return { ok: false, error: "limit_reached" };
+
+  const monitor = await prisma.monitor.create({
+    data: {
+      orgId: org.id,
+      name: validation.value.name,
+      description: validation.value.description ?? null,
+      metric: validation.value.metric,
+      comparator: validation.value.comparator,
+      threshold: validation.value.threshold,
+      windowMinutes: validation.value.windowMinutes,
+      environment: validation.value.environment ?? null,
+      model: validation.value.model ?? null,
+      // `createdBy` (Supabase auth_user_id) deferred until we surface it
+      // through the org helper. Schema allows null; design doc §2 notes
+      // this is V1-acceptable.
+    },
+  });
+
+  revalidatePath("/monitors");
+  return { ok: true, id: monitor.id };
 }
 
-/**
- * V1 STUB. Real impl (B8): scope-check `monitor.orgId === currentOrg.id`,
- * parse, update, revalidate.
- */
 export async function updateMonitor(
   id: string,
   raw: unknown,
-): Promise<MonitorActionResult> {
+): Promise<UpdateMonitorResult> {
   const org = await getOrCreateOrg();
-  if (!org) {
-    return { ok: false, message: "Tenant context unavailable." };
-  }
-  void requireTenantId(org.tenantId);
-  void id;
+  if (!org) return { ok: false, error: "no_tenant" };
 
   const validation = await validateMonitorInput(raw);
-  if (!validation.ok) {
+  if (!validation.ok || !validation.value) {
     return { ok: false, errors: validation.errors };
   }
 
-  return {
-    ok: false,
-    message:
-      "Monitor updates aren't wired up yet — backend tasks #14 + #15 are pending.",
-  };
+  // IDOR-safe `updateMany` with compound `(id, orgId)` filter. A wrong-
+  // tenant id matches zero rows; we map that to `not_found` rather than
+  // letting the caller think the update succeeded silently.
+  const result = await prisma.monitor.updateMany({
+    where: { id, orgId: org.id },
+    data: {
+      name: validation.value.name,
+      description: validation.value.description ?? null,
+      metric: validation.value.metric,
+      comparator: validation.value.comparator,
+      threshold: validation.value.threshold,
+      windowMinutes: validation.value.windowMinutes,
+      environment: validation.value.environment ?? null,
+      model: validation.value.model ?? null,
+    },
+  });
+  if (result.count === 0) return { ok: false, error: "not_found" };
+
+  revalidatePath("/monitors");
+  revalidatePath(`/monitors/${id}`);
+  return { ok: true };
 }
 
-/**
- * V1 STUB. Real impl (B8): scope-check, cascade delete via Prisma, revalidate.
- */
-export async function deleteMonitor(id: string): Promise<MonitorActionResult> {
+export async function deleteMonitor(id: string): Promise<DeleteMonitorResult> {
   const org = await getOrCreateOrg();
-  if (!org) return { ok: false, message: "Tenant context unavailable." };
-  void requireTenantId(org.tenantId);
-  void id;
-  return {
-    ok: false,
-    message: "Monitor deletion isn't wired up yet — backend tasks #14 + #15 are pending.",
-  };
+  if (!org) return { ok: false, error: "no_tenant" };
+
+  // `deleteMany` with the compound filter is atomically IDOR-safe — there's
+  // no find-then-delete window where another transaction could swap the
+  // row's orgId. Cascades to `MonitorTrigger` via the schema's
+  // `onDelete: Cascade`.
+  const result = await prisma.monitor.deleteMany({
+    where: { id, orgId: org.id },
+  });
+  if (result.count === 0) return { ok: false, error: "not_found" };
+
+  revalidatePath("/monitors");
+  return { ok: true };
 }
 
-/**
- * V1 STUB. Real impl (B8): scope-check, set `enabled = !current`, revalidate.
- */
 export async function toggleMonitor(
   id: string,
   enabled: boolean,
-): Promise<MonitorActionResult> {
+): Promise<ToggleMonitorResult> {
   const org = await getOrCreateOrg();
-  if (!org) return { ok: false, message: "Tenant context unavailable." };
-  void requireTenantId(org.tenantId);
-  void id;
-  void enabled;
-  return {
-    ok: false,
-    message: "Monitor toggle isn't wired up yet — backend tasks #14 + #15 are pending.",
-  };
+  if (!org) return { ok: false, error: "no_tenant" };
+
+  const result = await prisma.monitor.updateMany({
+    where: { id, orgId: org.id },
+    data: { enabled },
+  });
+  if (result.count === 0) return { ok: false, error: "not_found" };
+
+  revalidatePath("/monitors");
+  revalidatePath(`/monitors/${id}`);
+  return { ok: true };
 }
 
-/**
- * Preview the current value of a metric over the requested window for the
- * modal's live preview pane. Tenant-scoped via `requireTenantId()`.
- *
- * Today this returns the helper's stubbed `{ value: 0, ready: false }`.
- * Real impl is backend's task #17 (B10) — body of `previewMonitorMetric()`
- * in `lib/monitors.ts` swaps for a ClickHouse aggregation and this action
- * inherits the change.
- */
+// ---------------------------------------------------------------------------
+// Preview metric — server-action wrapper around the ClickHouse query.
+// Forwards to `previewMonitorMetric` in `lib/monitors-server.ts`, which
+// returns `{ ready: false }` until backend's #17 (B10) lands the real
+// aggregation. Modal renders an "unavailable" caption when not ready.
+// ---------------------------------------------------------------------------
+
 export async function previewMonitorMetricAction(
   raw: MonitorPreviewInput,
-): Promise<{ ok: true; result: MonitorPreviewResult } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true; result: MonitorPreviewResult }
+  | { ok: false; error: "no_tenant" }
+> {
   const org = await getOrCreateOrg();
-  if (!org) return { ok: false, message: "Tenant context unavailable." };
-  const tenantId = requireTenantId(org.tenantId);
-  const result = await previewMonitorMetric(tenantId, raw);
+  if (!org?.tenantId) return { ok: false, error: "no_tenant" };
+  const result = await previewMonitorMetric(org.tenantId, raw);
   return { ok: true, result };
 }
-

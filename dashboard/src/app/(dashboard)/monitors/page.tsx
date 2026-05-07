@@ -1,7 +1,7 @@
 import { Radar } from "lucide-react";
 import { getOrCreateOrg } from "@/lib/org";
 import { TenantContextFallback } from "@/components/tenant-context-fallback";
-import { getMonitors } from "@/lib/monitors";
+import { getMonitors } from "@/lib/monitors-server";
 import { getDistinctEnvironments } from "@/lib/queries/sessions";
 import { getDistinctModels } from "@/lib/queries/traces";
 import { TimeRangePicker } from "@/components/ui/time-range-picker";

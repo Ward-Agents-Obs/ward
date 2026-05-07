@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
-import { getFiringMonitorCount } from "@/lib/monitors";
+import { getFiringMonitorCount } from "@/lib/monitors-server";
 import { BannerRefresher } from "./banner-refresher";
 
 /**

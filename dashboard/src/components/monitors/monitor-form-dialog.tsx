@@ -30,8 +30,23 @@ import {
   createMonitor,
   previewMonitorMetricAction,
   updateMonitor,
-  type MonitorActionResult,
 } from "@/app/(dashboard)/monitors/actions";
+
+/**
+ * User-facing copy for the typed error tags the actions can return.
+ * Defined here rather than re-exported from `actions.ts` because
+ * `"use server"` modules can only export async functions.
+ */
+const ERROR_COPY: Record<
+  "no_tenant" | "not_found" | "limit_reached",
+  string
+> = {
+  no_tenant: "Sign-in expired — refresh the page and try again.",
+  not_found:
+    "This monitor no longer exists or you don't have access to it.",
+  limit_reached:
+    "You've reached the monitor cap (10 per tenant). Delete one before creating another.",
+};
 
 /**
  * Create/Edit Monitor modal (F8 / task #19).
@@ -101,8 +116,14 @@ interface MonitorFormDialogProps {
    */
   availableEnvironments?: string[];
   availableModels?: string[];
-  /** Fired with the saved monitor on success. Caller closes the modal. */
-  onSaved?: (monitor: Monitor) => void;
+  /**
+   * Fired on successful save so the caller can refresh / close. The action
+   * envelopes return only an `id`/no payload, so the prop intentionally
+   * doesn't pass back the persisted Monitor — callers that need the full
+   * row should refetch via `router.refresh()` (the standard pattern in
+   * `<CreateMonitorButton>` / `<EditMonitorButton>`).
+   */
+  onSaved?: () => void;
 }
 
 interface FormState {
@@ -191,8 +212,8 @@ export function MonitorFormDialog({
           availableModels={availableModels}
           isEdit={isEdit}
           onCancel={() => onOpenChange(false)}
-          onSaved={(monitor) => {
-            onSaved?.(monitor);
+          onSaved={() => {
+            onSaved?.();
             onOpenChange(false);
           }}
         />
@@ -213,7 +234,7 @@ interface FormBodyProps {
   availableModels: string[];
   isEdit: boolean;
   onCancel: () => void;
-  onSaved: (monitor: Monitor) => void;
+  onSaved: () => void;
 }
 
 function FormBody({
@@ -247,16 +268,22 @@ function FormBody({
 
     startSubmit(async () => {
       const input = buildInput(form);
-      const result: MonitorActionResult =
+      const result =
         isEdit && initial
           ? await updateMonitor(initial.id, input)
           : await createMonitor(input);
-      if (result.ok && result.monitor) {
-        onSaved(result.monitor);
+
+      if (result.ok) {
+        onSaved();
         return;
       }
-      if (result.errors) setErrors(result.errors);
-      if (result.message) setTopLevelError(result.message);
+      // Discriminated union narrowing: `errors` is field-level validation,
+      // `error` is a typed top-level tag mapped to copy via `ERROR_COPY`.
+      if ("errors" in result) {
+        setErrors(result.errors);
+        return;
+      }
+      setTopLevelError(ERROR_COPY[result.error]);
     });
   };
 
@@ -473,23 +500,41 @@ interface PreviewPaneProps {
 }
 
 function PreviewPane({ form }: PreviewPaneProps) {
-  // The preview only depends on the four fields the backend query takes,
-  // so debounce on those — no need to re-fetch when the user types in Name.
+  // The preview now depends on the threshold + comparator too — server
+  // computes `breached` so the modal can highlight "your monitor would
+  // already be firing" without reimplementing the comparison rule.
+  const thresholdNumber = Number(form.threshold);
+  const safeThreshold = Number.isFinite(thresholdNumber) ? thresholdNumber : 0;
   const previewKey = useMemo(
     () =>
       JSON.stringify({
         metric: form.metric,
+        comparator: form.comparator,
+        threshold: safeThreshold,
         windowMinutes: form.windowMinutes,
         environment: form.environment || null,
         model: form.model || null,
       }),
-    [form.metric, form.windowMinutes, form.environment, form.model]
+    [
+      form.metric,
+      form.comparator,
+      safeThreshold,
+      form.windowMinutes,
+      form.environment,
+      form.model,
+    ]
   );
 
   type PreviewState =
     | { status: "idle" }
     | { status: "loading" }
-    | { status: "ready"; value: number; asOf: string | null }
+    | {
+        status: "ready";
+        value: number;
+        threshold: number;
+        breached: boolean;
+        asOf: string | null;
+      }
     | { status: "unavailable" }
     | { status: "error"; message: string };
 
@@ -502,13 +547,17 @@ function PreviewPane({ form }: PreviewPaneProps) {
       try {
         const result = await previewMonitorMetricAction({
           metric: form.metric,
+          comparator: form.comparator,
+          threshold: safeThreshold,
           windowMinutes: form.windowMinutes,
           environment: form.environment || null,
           model: form.model || null,
         });
         if (cancelled) return;
         if (!result.ok) {
-          setState({ status: "error", message: result.message });
+          // The preview action only ever returns `error: "no_tenant"` —
+          // map to the same copy the modal uses for save failures.
+          setState({ status: "error", message: ERROR_COPY[result.error] });
           return;
         }
         if (!result.result.ready) {
@@ -518,6 +567,8 @@ function PreviewPane({ form }: PreviewPaneProps) {
         setState({
           status: "ready",
           value: result.result.value,
+          threshold: result.result.threshold,
+          breached: result.result.breached,
           asOf: result.result.asOf,
         });
       } catch (cause) {
@@ -553,14 +604,34 @@ function PreviewPane({ form }: PreviewPaneProps) {
         {state.status === "loading" ? (
           <p className="text-sm text-muted-foreground">Fetching current value…</p>
         ) : state.status === "ready" ? (
-          <p className="text-2xl font-semibold tabular-nums text-foreground">
-            {formatPreviewValue(form.metric, state.value)}
-          </p>
+          <div className="space-y-2">
+            <div className="flex items-baseline justify-between gap-3">
+              <p className="text-2xl font-semibold tabular-nums text-foreground">
+                {formatPreviewValue(form.metric, state.value)}
+              </p>
+              {state.breached ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
+                  Currently breached
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
+                  Within threshold
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              vs. threshold of{" "}
+              <span className="font-medium text-foreground">
+                {formatPreviewValue(form.metric, state.threshold)}
+              </span>
+              {state.asOf ? <> · {formatRelativeFreshness(state.asOf)}</> : null}
+            </p>
+          </div>
         ) : state.status === "unavailable" ? (
           <p className="text-sm text-muted-foreground">
-            Preview unavailable — backend task #17 (B10) wires the live
-            ClickHouse query. Until then the form ships without a real preview
-            value.
+            Preview unavailable — the backend ClickHouse query couldn&apos;t
+            be reached. Try saving the monitor; evaluation will retry on
+            the cron tick.
           </p>
         ) : state.status === "error" ? (
           <p className="text-sm text-destructive">{state.message}</p>
@@ -568,6 +639,17 @@ function PreviewPane({ form }: PreviewPaneProps) {
       </div>
     </div>
   );
+}
+
+/** "as of N seconds/minutes ago" copy for the preview's freshness label. */
+function formatRelativeFreshness(iso: string): string {
+  const elapsedMs = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return "just now";
+  const seconds = Math.floor(elapsedMs / 1000);
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ago`;
 }
 
 function formatPreviewValue(metric: MonitorMetric, value: number): string {

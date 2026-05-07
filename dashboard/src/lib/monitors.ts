@@ -1,17 +1,18 @@
-// Server-only module (consumed by server components + the actions module
-// in `app/(dashboard)/monitors/actions.ts`). Deliberately NOT marked
-// `"use server"` because it exports non-async types and constants alongside
-// the async helpers — the directive would forbid those exports.
+// Mixed-export module: types + constants + the pure validator. Deliberately
+// NOT marked `"use server"` because non-async exports (`MONITOR_METRICS`,
+// `MonitorMetric`, `validateMonitorInput`) are imported by client
+// components — the directive would forbid those.
+//
+// Server-only async helpers that touch Prisma live in `lib/monitors-server.ts`.
+// The split matches the convention documented in
+// `.agents/dashboard-conventions-drift.md` §1.2.
 
 /**
- * V1 monitor types, validation, and stubbed read helpers.
- *
- * Source-of-truth schema lives in `.agents/monitors-design.md` §2 + §5.
- * Backend's task #15 (B8) will own the zod schema and the real Prisma calls;
- * this module ships the types + a hand-rolled validator so the F8 modal
- * (#19) and F10 banner (#21) can be scaffolded against a real-shape API
- * before the backend lands. Each "STUB" comment marks a body that swaps
- * for a Prisma / ClickHouse call once #14 / #15 / #17 are merged.
+ * V1 monitor types + validation. Source-of-truth schema lives in
+ * `.agents/monitors-design.md` §2 + §5. The validator is hand-rolled rather
+ * than zod-based to keep the client-bundle footprint small; backend's #15
+ * design proposed swapping to `zod.safeParse()` but the return shape is
+ * identical so the swap is body-only when zod is approved.
  */
 
 // ---------------------------------------------------------------------------
@@ -158,75 +159,11 @@ export async function validateMonitorInput(
 }
 
 // ---------------------------------------------------------------------------
-// Read helpers — stubs until backend's #14 lands the Prisma model.
-// ---------------------------------------------------------------------------
-
-/**
- * Firing-monitor count for the dashboard banner (F10 / task #21).
- *
- * V1 STUB. Once the Monitor Prisma model exists, replace the body with:
- *
- *     import { prisma } from "@/lib/prisma";
- *     return prisma.monitor.count({
- *       where: { orgId, state: "firing", enabled: true },
- *     });
- *
- * The consumer (`<FiringBanner />`) is wired against the signature below so
- * the swap is body-only — no caller updates, no banner re-render path
- * changes. Reasoning lives in `.agents/monitors-design.md` §4.
- */
-export async function getFiringMonitorCount(orgId: string): Promise<number> {
-  // The arg is intentionally unused in the stub but kept on the signature
-  // so the real Prisma call is a one-line drop-in.
-  void orgId;
-  return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Preview metric — stub for the modal's live value pane (F8 / task #19).
-// Will swap to a real ClickHouse aggregation in backend's #17 (B10).
-// ---------------------------------------------------------------------------
-
-export interface MonitorPreviewInput {
-  metric: MonitorMetric;
-  windowMinutes: MonitorWindow;
-  environment?: string | null;
-  model?: string | null;
-}
-
-export interface MonitorPreviewResult {
-  /** Numeric value of the metric across the requested window. */
-  value: number;
-  /**
-   * Surface the data freshness so the form can label "as of N seconds ago".
-   * Stub returns `null` to indicate no real data; real impl returns now().
-   */
-  asOf: string | null;
-  /**
-   * Whether the call resolved against real data. Stub sets `false` so the
-   * preview pane can render a "preview unavailable" caption until #17 ships.
-   */
-  ready: boolean;
-}
-
-/**
- * V1 STUB — backend's task #17 (B10) replaces with a tenant-scoped
- * ClickHouse query against `otel_traces`. Until then, the modal renders an
- * "unavailable" preview caption.
- */
-export async function previewMonitorMetric(
-  tenantId: string,
-  input: MonitorPreviewInput,
-): Promise<MonitorPreviewResult> {
-  void tenantId;
-  void input;
-  return { value: 0, asOf: null, ready: false };
-}
-
-// ---------------------------------------------------------------------------
-// List + detail read helpers — stubs for F7 (#18) and F9 (#20). All three
-// helpers return mock data shaped exactly like the real Prisma read so the
-// page swap-in is body-only when backend's #14 / B11-style queries land.
+// Read-helper types. The async helpers themselves live in
+// `lib/monitors-server.ts` — split out so this module (imported by client
+// components for `MONITOR_METRICS` / `validateMonitorInput`) doesn't pull
+// `@prisma/client` into the client bundle. Convention is in
+// `.agents/dashboard-conventions-drift.md` §1.2.
 // ---------------------------------------------------------------------------
 
 /**
@@ -244,163 +181,46 @@ export interface MonitorTrigger {
 }
 
 /**
- * Row shape used by the `/monitors` list page. Extends the base `Monitor`
- * with `lastTriggeredAt`, which the real impl will derive from the latest
- * `MonitorTrigger.firedAt` for that monitor (likely via a Prisma include +
- * post-process or a windowed subquery).
+ * Row shape returned by the `/monitors` list and detail pages. Extends the
+ * base `Monitor` with `lastTriggeredAt`, derived from the latest
+ * `MonitorTrigger.firedAt` for that monitor.
  */
 export interface MonitorListRow extends Monitor {
   lastTriggeredAt: string | null;
 }
 
 /**
- * V1 STUB. Real impl swaps to:
- *
- *   const monitors = await prisma.monitor.findMany({
- *     where: { orgId },
- *     orderBy: { updatedAt: "desc" },
- *     include: { triggers: { orderBy: { firedAt: "desc" }, take: 1 } },
- *   });
- *   return monitors.map((m) => ({ ...m, lastTriggeredAt: m.triggers[0]?.firedAt ?? null }));
- *
- * The mock entries cover every state the list page needs to render — a
- * firing monitor, a healthy ok monitor, and a disabled monitor — so the
- * scaffolded UI exercises every code path before backend lands #14.
+ * Input shape for the live preview pane in the create/edit modal. Includes
+ * comparator + threshold so the server can compute `breached` and the modal
+ * doesn't duplicate the comparison logic.
  */
-export async function getMonitors(orgId: string): Promise<MonitorListRow[]> {
-  // TODO(#18): replace with prisma.monitor.findMany({ where: { orgId }, ... }).
-  void orgId;
-  const now = new Date();
-  const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
-  return [
-    {
-      id: "mon_mock_firing",
-      name: "Cost spike — production",
-      description: "Alerts when prod model spend crosses the daily budget.",
-      metric: "cost",
-      comparator: "gt",
-      threshold: 5,
-      windowMinutes: 60,
-      environment: "production",
-      model: null,
-      enabled: true,
-      state: "firing",
-      lastEvaluatedAt: minutesAgo(2),
-      lastValue: 7.42,
-      lastTriggeredAt: minutesAgo(8),
-    },
-    {
-      id: "mon_mock_ok",
-      name: "p95 latency — gpt-4o",
-      description: null,
-      metric: "latency_p95",
-      comparator: "gt",
-      threshold: 1500,
-      windowMinutes: 15,
-      environment: "production",
-      model: "gpt-4o",
-      enabled: true,
-      state: "ok",
-      lastEvaluatedAt: minutesAgo(1),
-      lastValue: 980,
-      lastTriggeredAt: null,
-    },
-    {
-      id: "mon_mock_disabled",
-      name: "Error rate — staging",
-      description: "Paused while we tune the new prompt template.",
-      metric: "error_rate",
-      comparator: "gt",
-      threshold: 0.05,
-      windowMinutes: 60,
-      environment: "staging",
-      model: null,
-      enabled: false,
-      state: "ok",
-      lastEvaluatedAt: minutesAgo(180),
-      lastValue: 0.012,
-      lastTriggeredAt: minutesAgo(60 * 24 * 3),
-    },
-  ];
+export interface MonitorPreviewInput {
+  metric: MonitorMetric;
+  comparator: MonitorComparator;
+  threshold: number;
+  windowMinutes: MonitorWindow;
+  environment?: string | null;
+  model?: string | null;
 }
 
-/**
- * V1 STUB. Real impl swaps to:
- *
- *   const monitor = await prisma.monitor.findFirst({ where: { id, orgId } });
- *   return monitor ?? null;
- *
- * `orgId` is required so the swap-in trivially enforces the IDOR guard
- * called out in `monitors-design.md` §7 (`monitor.orgId === currentOrg.id`)
- * — looking up by the compound `(id, orgId)` makes "wrong tenant" return
- * `null`, not throw.
- */
-export async function getMonitor(
-  orgId: string,
-  id: string,
-): Promise<MonitorListRow | null> {
-  // TODO(#20): replace with prisma.monitor.findFirst({ where: { id, orgId }, ... }).
-  const all = await getMonitors(orgId);
-  return all.find((m) => m.id === id) ?? null;
+/** Output shape for the live preview pane. */
+export interface MonitorPreviewResult {
+  /** Numeric value of the metric across the requested window. */
+  value: number;
+  /** Echoed back so the modal can render "value vs threshold" in one read. */
+  threshold: number;
+  /**
+   * Whether `value` violates `comparator threshold` right now. Server-side
+   * comparison so the rule stays consistent with the cron worker's
+   * evaluator.
+   */
+  breached: boolean;
+  /** ISO timestamp of when the query ran, for "as of N seconds ago" copy. */
+  asOf: string | null;
+  /**
+   * Whether the value reflects a real ClickHouse query. False on
+   * unreachable backend; the modal renders an "unavailable" caption.
+   */
+  ready: boolean;
 }
 
-/**
- * V1 STUB. Real impl swaps to:
- *
- *   return prisma.monitorTrigger.findMany({
- *     where: { monitorId, monitor: { orgId } },
- *     orderBy: { firedAt: "desc" },
- *     take: limit,
- *   });
- *
- * The nested `monitor: { orgId }` filter is the IDOR guard — a trigger
- * whose monitor doesn't belong to this org is filtered out at the DB level
- * rather than relying on a follow-up check.
- */
-export async function getMonitorTriggers(
-  orgId: string,
-  monitorId: string,
-  limit: number = 50,
-): Promise<MonitorTrigger[]> {
-  // TODO(#20): replace with prisma.monitorTrigger.findMany({ where: { monitorId, monitor: { orgId } }, ... }).
-  void orgId;
-  void limit;
-  if (monitorId !== "mon_mock_firing" && monitorId !== "mon_mock_disabled") {
-    return [];
-  }
-  const now = new Date();
-  const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
-  if (monitorId === "mon_mock_firing") {
-    return [
-      {
-        id: "trg_mock_firing_1",
-        monitorId,
-        firedAt: minutesAgo(8),
-        resolvedAt: null,
-        triggerValue: 7.42,
-        threshold: 5,
-        comparator: "gt",
-      },
-      {
-        id: "trg_mock_firing_2",
-        monitorId,
-        firedAt: minutesAgo(60 * 6),
-        resolvedAt: minutesAgo(60 * 5),
-        triggerValue: 6.1,
-        threshold: 5,
-        comparator: "gt",
-      },
-    ];
-  }
-  return [
-    {
-      id: "trg_mock_disabled_1",
-      monitorId,
-      firedAt: minutesAgo(60 * 24 * 3),
-      resolvedAt: minutesAgo(60 * 24 * 3 - 30),
-      triggerValue: 0.087,
-      threshold: 0.05,
-      comparator: "gt",
-    },
-  ];
-}
