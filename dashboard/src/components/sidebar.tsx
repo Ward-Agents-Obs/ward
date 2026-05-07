@@ -5,10 +5,7 @@ import { usePathname } from "next/navigation";
 import type { ComponentType } from "react";
 import { useState } from "react";
 import {
-  Bug,
   ChevronLeft,
-  ChevronRight,
-  DollarSign,
   FlaskConical,
   FolderKanban,
   LayoutDashboard,
@@ -19,7 +16,6 @@ import {
   SlidersHorizontal,
   Sparkles,
   TestTube2,
-  Waypoints,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
@@ -49,6 +45,9 @@ function getInitials(email: string) {
 }
 
 function buildWorkspaceNav(): NavGroup[] {
+  // V1 sidebar: only routes that exist. Settings is rendered in the footer below.
+  // Project workbench (datasets/playground/etc.) and Wardbugger are deferred to V1.1+
+  // and are exposed via `buildProjectNav()` behind the projects feature flag.
   return [
     {
       label: "Workspace",
@@ -58,13 +57,16 @@ function buildWorkspaceNav(): NavGroup[] {
         { href: "/monitors", label: "Monitors", icon: Radar },
       ],
     },
-    {
-      label: "True sight",
-      items: [
-        { href: "/wardbugger", label: "Wardbugger", icon: Bug },
-      ],
-    },
   ];
+}
+
+/**
+ * Feature flag for the project shell. V1 ships single-org without project sub-tenancy;
+ * the `/projects/<slug>/*` routes stay in the codebase but are unlinked from the sidebar.
+ * Set NEXT_PUBLIC_PROJECTS_ENABLED=true in the env to revive the project workbench nav.
+ */
+function isProjectsEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_PROJECTS_ENABLED === "true";
 }
 
 function buildProjectNav(projectSlug: string): NavGroup[] {
@@ -110,7 +112,12 @@ export function Sidebar({
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [showLogout, setShowLogout] = useState(false);
-  const activeProjectSlug = resolveProjectSlug(pathname, projectSlug);
+  // V1: never render the project shell from the sidebar unless the projects flag is on.
+  // The `/projects/<slug>` route still works if visited directly, but the workspace
+  // nav stays visible so users always have a way back to Overview/Tracing/Monitors.
+  const activeProjectSlug = isProjectsEnabled()
+    ? resolveProjectSlug(pathname, projectSlug)
+    : null;
   const navGroups = activeProjectSlug ? buildProjectNav(activeProjectSlug) : buildWorkspaceNav();
   const workspaceCompactLabel = workspaceLabel.slice(0, 2).toUpperCase() || "WS";
   const title = activeProjectSlug ? "Project Command Center" : "Workspace Command Center";
