@@ -163,14 +163,18 @@ The local Compose file ships with deliberately weak defaults (`otelpass`, `postg
 
 ### Required overrides for any non-local deploy
 
-| Variable | Notes |
-|---|---|
-| `COLLECTOR_AUTH_TOKEN` | **Required, no default.** Both gateway and collector refuse to start without it. Generate fresh: `openssl rand -hex 32`. |
-| `REDIS_PASSWORD` | **Required for prod.** The redis service runs with `--requirepass $REDIS_PASSWORD`; the gateway (`cmd/gateway/main.go`) and the dashboard (`lib/redis.ts`) BOTH hard-fail at boot if empty so an operator misconfig (e.g. forgotten password on the redis task itself) can't silently downgrade the stack to anonymous Redis. Generate fresh: `openssl rand -hex 32`. Use a url-safe value (alphanumeric + `_-`) if you embed it in a custom `REDIS_URL`. |
-| `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | The dashboard's `lib/clickhouse.ts` hard-fails at module load if either is missing — no compiled-in fallback. |
-| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Match the values referenced by `DATABASE_URL` below. |
-| `DATABASE_URL` | Either a DSN that points at the in-stack `postgres` service or an external Postgres (Supabase, RDS). The dashboard's Prisma client and the gateway's API-key hydrate (#26) both read this. |
-| `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD` | The default `admin/admin` would be an obvious initial-foothold gift to anyone scanning :3000 in any deploy that exposes it. |
+The **Surface** column tells you where each value flows in production. *Terraform → Secrets Manager* values are read from the Terraform input variable named on the right, uploaded into AWS Secrets Manager by `terraform apply`, and pulled into the ECS task at boot via the task definition's `secrets` array — they never appear in the task definition's `environment` block. *env-file* values are read from `.env` / `.env.production` by docker-compose at `up` time. *Vercel project env* values live in whatever runtime hosts the dashboard.
+
+| Variable | Notes | Surface |
+|---|---|---|
+| `COLLECTOR_AUTH_TOKEN` | **Required, no default.** Both gateway and collector refuse to start without it. Generate fresh: `openssl rand -hex 32`. | Terraform → Secrets Manager (`var.collector_auth_token`, #35) |
+| `REDIS_PASSWORD` | **Required for prod.** The redis service runs with `--requirepass $REDIS_PASSWORD`; the gateway (`cmd/gateway/main.go`) and the dashboard (`lib/redis.ts`) BOTH hard-fail at boot if empty so an operator misconfig (e.g. forgotten password on the redis task itself) can't silently downgrade the stack to anonymous Redis. Generate fresh: `openssl rand -hex 32`. Use a url-safe value (alphanumeric + `_-`) if you embed it in a custom `REDIS_URL`. | Terraform → Secrets Manager (`var.redis_password`, #34) for the gateway+redis tasks; Vercel project env for the dashboard |
+| `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | The dashboard's `lib/clickhouse.ts` hard-fails at module load if either is missing — no compiled-in fallback. | Terraform → Secrets Manager (`var.clickhouse_user`, `var.clickhouse_password`, #35) for the clickhouse + collector tasks; Vercel project env for the dashboard |
+| `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Match the values referenced by `DATABASE_URL` below. | env-file only (local stack); managed Postgres (Supabase / RDS) handles credentials at the provider level in prod |
+| `DATABASE_URL` | Either a DSN that points at the in-stack `postgres` service or an external Postgres (Supabase, RDS). The dashboard's Prisma client and the gateway's API-key hydrate (#26) both read this. | Terraform → Secrets Manager (`var.gateway_database_url`, #35) for the gateway task — empty value disables hydrate per #26; Vercel project env for the dashboard's Prisma client |
+| `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD` | The default `admin/admin` would be an obvious initial-foothold gift to anyone scanning :3000 in any deploy that exposes it. | env-file only (Grafana isn't in the prod ECS deploy yet) |
+
+**Secret rotation.** A `var.*_password` change triggers two Terraform actions on the next `terraform apply`: a new `aws_secretsmanager_secret_version` (the value upload) AND a new `aws_ecs_task_definition` revision (the metadata that points the task at the new value). ECS won't pick up a rotation until the task is recreated against the new revision — `aws_ecs_service` does this automatically when the task definition ARN changes. If you rotate by editing the secret directly in the AWS console or CLI, you ALSO need to force a new task-def revision (touch a `description` field or run `aws ecs update-service --force-new-deployment`) to make the running tasks pick up the new value.
 
 **Dashboard infra coupling.** The dashboard's runtime (Vercel / Render / etc.) is not in the `infra/*.tf` Terraform — those manifests cover gateway, collector, redis, and clickhouse only. Set `REDIS_PASSWORD` (and the other variables above) in whatever runtime hosts the dashboard, with the same value as the rest of the stack. Treat it like `NEXT_PUBLIC_SUPABASE_URL`: an operator obligation, surfaced via the dashboard's hard-fail on missing env.
 
@@ -184,7 +188,7 @@ docker compose --env-file .env.production up -d
 
 Compose's `${VAR:-default}` syntax keeps the defaults active when the override is empty, so a partially-populated env file silently uses dev creds for anything you forgot. **For prod, ensure every variable in the table above is present in `.env.production`** — the smoke test is `docker compose config --env-file .env.production` and grepping for any of `otelpass`, `postgres`, `admin`, `devredispass` in the rendered output.
 
-V1.1 progress: #34 (Redis auth via Secrets Manager) and #35 (ClickHouse password migration) move the credential plumbing through AWS Secrets Manager / ECS `secrets` arrays so nothing rides on the env-file pattern in the cloud deploy for the migrated services. The Redis password is already on this path (`infra/services/redis.tf::aws_secretsmanager_secret`); the rest follow under #35. Until then, `--env-file` is the supported path for the un-migrated services.
+V1.1 progress: #34 (Redis auth) and #35 (ClickHouse / collector-auth / DATABASE_URL) have moved every cloud-deploy credential off the ECS task `environment` block onto AWS Secrets Manager via the `secrets` array — nothing credential-shaped survives in `terraform plan` output. The local docker-compose stack still uses `${VAR:-default}` substitutions for dev convenience; that's by design (Secrets Manager is prod-only) and matches the #31 split.
 
 ## Configuration
 

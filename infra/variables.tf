@@ -94,9 +94,23 @@ variable "clickhouse_ebs_size" {
 }
 
 variable "clickhouse_password" {
-  description = "ClickHouse password for the otel user"
+  description = "ClickHouse password for the otel user. Plumbed via Secrets Manager + ECS `secrets` array since #35; never appears in `aws_ecs_task_definition.environment`."
   type        = string
   sensitive   = true
+}
+
+variable "clickhouse_user" {
+  description = <<-EOT
+    ClickHouse username. Paired with `clickhouse_password` so both halves of
+    the credential rotate together (#35). Default `otel` matches the value
+    that was hardcoded in clickhouse.tf / collector.tf before the migration.
+
+    Plumbed via Secrets Manager — the username isn't sensitive on its own
+    but living in the same surface as the password makes the rotation story
+    one-stop instead of "update one var here, the other var there."
+  EOT
+  type        = string
+  default     = "otel"
 }
 
 variable "collector_auth_token" {

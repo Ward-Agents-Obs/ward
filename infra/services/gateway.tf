@@ -1,3 +1,19 @@
+# Postgres DSN for the gateway's #26 hydrate. Migrated to Secrets Manager
+# in #35 — DSN strings often embed credentials (`postgresql://user:pass@…`)
+# so they get the same treatment as the rest of the secret pile. When
+# `var.gateway_database_url` is empty (default — disables hydrate per #26),
+# the secret_version is created with empty contents; the gateway's
+# `runHydrate` self-disables at runtime when DATABASE_URL == "".
+resource "aws_secretsmanager_secret" "gateway_database_url" {
+  name        = "${var.project_name}-gateway-database-url"
+  description = "Postgres DSN for the gateway's API-key hydrate (#26, migrated in #35)"
+}
+
+resource "aws_secretsmanager_secret_version" "gateway_database_url" {
+  secret_id     = aws_secretsmanager_secret.gateway_database_url.id
+  secret_string = var.gateway_database_url
+}
+
 resource "aws_ecs_task_definition" "gateway" {
   family                   = "${var.project_name}-gateway"
   requires_compatibilities = ["FARGATE"]
@@ -23,28 +39,35 @@ resource "aws_ecs_task_definition" "gateway" {
       { name = "COLLECTOR_ADDR", value = "http://collector.${var.project_name}.local:4318" },
       { name = "REDIS_ADDR", value = "redis.${var.project_name}.local:6379" },
       { name = "DEFAULT_RATE_LIMIT", value = tostring(var.gateway_default_rate_limit) },
-      # Shared secret with the otel-collector's bearertokenauth extension.
-      # The gateway refuses to start without it (#25). Today plumbed via env;
-      # #35 migrates this and `clickhouse_password` to ECS `secrets` array
-      # sourced from AWS Secrets Manager.
-      { name = "COLLECTOR_AUTH_TOKEN", value = var.collector_auth_token },
-      # Postgres DSN for the startup API-key hydrate pass (#26). Empty
-      # disables hydrate; the gateway then runs in Redis-only mode and
-      # loses the Postgres↔Redis convergence guard. Same Secrets Manager
-      # trajectory as the other secrets here — see #35.
-      { name = "DATABASE_URL", value = var.gateway_database_url },
     ]
 
-    # Redis bearer secret. Sourced from Secrets Manager (#34) — this
-    # establishes the pattern #35 will use for `collector_auth_token`
-    # and `clickhouse_password`. Gateway main() hard-fails if
-    # `REDIS_PASSWORD` is empty so an operator misconfig (forgotten env
-    # on the redis task itself) surfaces at boot rather than as a
-    # silent anonymous Redis connection.
-    secrets = [{
-      name      = "REDIS_PASSWORD"
-      valueFrom = aws_secretsmanager_secret.redis_password.arn
-    }]
+    # All three runtime secrets sourced from Secrets Manager — #34 brought
+    # `REDIS_PASSWORD` over, #35 finished the sweep with `COLLECTOR_AUTH_TOKEN`
+    # and `DATABASE_URL`. Nothing credential-shaped survives in the
+    # `environment` block above. The gateway's `cmd/gateway/main.go` and
+    # `internal/config/config.go::requireEnv()` hard-fail at boot if
+    # REDIS_PASSWORD or COLLECTOR_AUTH_TOKEN is empty; an operator
+    # misconfig that leaves the upstream task running anonymously surfaces
+    # immediately rather than as a silent compromise.
+    #
+    # `DATABASE_URL` is allowed-empty by design (#26) — when the var is
+    # unset the secret_version stores an empty string, the env injects an
+    # empty value, and `runHydrate` self-disables. Operators who want
+    # hydrate must populate `var.gateway_database_url`.
+    secrets = [
+      {
+        name      = "REDIS_PASSWORD"
+        valueFrom = aws_secretsmanager_secret.redis_password.arn
+      },
+      {
+        name      = "COLLECTOR_AUTH_TOKEN"
+        valueFrom = aws_secretsmanager_secret.collector_auth_token.arn
+      },
+      {
+        name      = "DATABASE_URL"
+        valueFrom = aws_secretsmanager_secret.gateway_database_url.arn
+      },
+    ]
 
     logConfiguration = {
       logDriver = "awslogs"

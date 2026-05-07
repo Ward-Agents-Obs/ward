@@ -1,3 +1,19 @@
+# Shared collector-auth bearer token. Lives in Secrets Manager (#35) so it
+# never appears in either gateway or collector ECS task definition `environment`
+# blocks. Declared here on the collector side because the collector is the
+# enforcement point — the `bearertokenauth` extension validates inbound
+# tokens against this value; the gateway just sets the matching header.
+# Both task defs reference this same ARN via Terraform module-level resolution.
+resource "aws_secretsmanager_secret" "collector_auth_token" {
+  name        = "${var.project_name}-collector-auth-token"
+  description = "Bearer token shared between gateway and otel-collector (#25, migrated to Secrets Manager in #35)"
+}
+
+resource "aws_secretsmanager_secret_version" "collector_auth_token" {
+  secret_id     = aws_secretsmanager_secret.collector_auth_token.id
+  secret_string = var.collector_auth_token
+}
+
 resource "aws_service_discovery_service" "collector" {
   name = "collector"
 
@@ -41,12 +57,26 @@ resource "aws_ecs_task_definition" "collector" {
     environment = [
       { name = "CLICKHOUSE_HOST", value = "clickhouse.${var.project_name}.local" },
       { name = "CLICKHOUSE_DATABASE", value = "default" },
-      { name = "CLICKHOUSE_USERNAME", value = "otel" },
-      { name = "CLICKHOUSE_PASSWORD", value = var.clickhouse_password },
-      # Must match the gateway's COLLECTOR_AUTH_TOKEN. The bearertokenauth
-      # extension verifies inbound OTLP requests against this value (#25).
-      # See `clickhouse_password` note above re: #35 secrets-manager migration.
-      { name = "COLLECTOR_AUTH_TOKEN", value = var.collector_auth_token },
+    ]
+
+    # All three secrets injected via Secrets Manager (#35). The OTel
+    # Collector's clickhouse exporter reads CLICKHOUSE_USERNAME (note: the
+    # collector exporter uses `_USERNAME` whereas clickhouse-server itself
+    # reads `_USER` — different env name, same underlying secret). The
+    # bearertokenauth extension reads COLLECTOR_AUTH_TOKEN.
+    secrets = [
+      {
+        name      = "CLICKHOUSE_USERNAME"
+        valueFrom = aws_secretsmanager_secret.clickhouse_user.arn
+      },
+      {
+        name      = "CLICKHOUSE_PASSWORD"
+        valueFrom = aws_secretsmanager_secret.clickhouse_password.arn
+      },
+      {
+        name      = "COLLECTOR_AUTH_TOKEN"
+        valueFrom = aws_secretsmanager_secret.collector_auth_token.arn
+      },
     ]
 
     logConfiguration = {

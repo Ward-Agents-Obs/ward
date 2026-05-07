@@ -40,9 +40,11 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
 
 # Custom inline policy granting `secretsmanager:GetSecretValue` on the
 # specific secret ARNs the ECS tasks reference via their `secrets` arrays.
-# Started in #34 with the Redis password; #35 will extend the resources
-# list with the ClickHouse + collector secrets when those migrate off the
-# task definition `environment` block.
+# Started in #34 with the Redis password; #35 extended it with the
+# ClickHouse credentials (paired user + password), the collector-auth
+# bearer token, and the gateway's Postgres DSN. The remaining plaintext
+# task `environment` entries (CLICKHOUSE_DB, REDIS_ADDR, etc.) are
+# non-credential configuration and stay in the open.
 #
 # Scoped to the exact secret ARNs (not `arn:aws:secretsmanager:*:*:*`) so
 # a future task that accidentally lands on this shared role can't read
@@ -54,9 +56,15 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.redis_password.arn]
+      Effect = "Allow"
+      Action = ["secretsmanager:GetSecretValue"]
+      Resource = [
+        aws_secretsmanager_secret.redis_password.arn,
+        aws_secretsmanager_secret.clickhouse_user.arn,
+        aws_secretsmanager_secret.clickhouse_password.arn,
+        aws_secretsmanager_secret.collector_auth_token.arn,
+        aws_secretsmanager_secret.gateway_database_url.arn,
+      ]
     }]
   })
 }

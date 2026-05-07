@@ -1,6 +1,33 @@
 # ClickHouse runs on EC2-backed ECS for EBS persistent storage (high IOPS).
 # Fargate only supports EFS which is too slow for ClickHouse's workload.
 
+# ClickHouse credentials live in Secrets Manager so they never appear in
+# `aws_ecs_task_definition.environment` plaintext (#35 — extends the redis
+# pattern from #34). Both clickhouse and otel-collector tasks pull them via
+# the ECS `secrets` array; the IAM execution role's
+# `secretsmanager:GetSecretValue` permission scopes strictly to these ARNs
+# (see `infra/ecs.tf::ecs_execution_secrets`). Username + password are
+# separate secrets so rotation can swap one without churning the other.
+resource "aws_secretsmanager_secret" "clickhouse_user" {
+  name        = "${var.project_name}-clickhouse-user"
+  description = "ClickHouse username (paired with clickhouse_password, #35)"
+}
+
+resource "aws_secretsmanager_secret_version" "clickhouse_user" {
+  secret_id     = aws_secretsmanager_secret.clickhouse_user.id
+  secret_string = var.clickhouse_user
+}
+
+resource "aws_secretsmanager_secret" "clickhouse_password" {
+  name        = "${var.project_name}-clickhouse-password"
+  description = "ClickHouse password for the otel user (#35)"
+}
+
+resource "aws_secretsmanager_secret_version" "clickhouse_password" {
+  secret_id     = aws_secretsmanager_secret.clickhouse_password.id
+  secret_string = var.clickhouse_password
+}
+
 resource "aws_service_discovery_service" "clickhouse" {
   name = "clickhouse"
 
@@ -143,8 +170,20 @@ resource "aws_ecs_task_definition" "clickhouse" {
 
     environment = [
       { name = "CLICKHOUSE_DB", value = "default" },
-      { name = "CLICKHOUSE_USER", value = "otel" },
-      { name = "CLICKHOUSE_PASSWORD", value = var.clickhouse_password },
+    ]
+
+    # ClickHouse credentials sourced from Secrets Manager (#35). The values
+    # used to live in the `environment` array as plain `var.clickhouse_*`,
+    # which leaked them via `ecs:DescribeTaskDefinition` and Terraform state.
+    secrets = [
+      {
+        name      = "CLICKHOUSE_USER"
+        valueFrom = aws_secretsmanager_secret.clickhouse_user.arn
+      },
+      {
+        name      = "CLICKHOUSE_PASSWORD"
+        valueFrom = aws_secretsmanager_secret.clickhouse_password.arn
+      },
     ]
 
     mountPoints = [{
