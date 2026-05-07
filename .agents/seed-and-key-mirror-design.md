@@ -10,7 +10,7 @@ Takes `--tenant` (required), `--tier` (default `free`), `--rate-limit` (default 
 
 Per locked decision: seed dual-writes to Redis **and** Postgres `api_keys`.
 1. Resolve-or-create the Postgres `organizations` row keyed on `tenant_id` (`ON CONFLICT (tenant_id) DO NOTHING`).
-2. Insert into `api_keys` with `org_id`, `key_hash`, `key_prefix = plain[:11]`, `name = "seeded"`, `active = true`. `ON CONFLICT (key_hash) DO NOTHING`.
+2. Insert into `api_keys` with `org_id`, `key_hash`, `key_prefix = plain[:12] + "..."` (15 chars total — matches `dashboard/src/lib/api-keys.ts:9` byte-for-byte so `/settings/keys` renders both sources with identical column shapes; team-lead overrode the original `plain[:11]` design literal during #27 review for UI consistency, see commit `190d50b`), `name = "seeded"`, `active = true`. `ON CONFLICT (key_hash) DO NOTHING`.
 3. Add `--no-postgres` flag for stacks without Prisma migrations (early CI).
 4. **Standardize key format with the dashboard.** Today seed emits `ward_<48 hex>`, dashboard emits `ak_live_<32 hex>`. Pick one — recommend `ak_live_<32 hex>` since it matches `/settings/keys` and downstream gitleaks/CI regex (`ak_live_[0-9a-f]{32}`).
 
