@@ -20,6 +20,7 @@ import {
   getSpansOverTimeByModel,
   type OverviewTimeRange,
 } from "@/lib/queries/overview";
+import { getDistinctEnvironments } from "@/lib/queries/sessions";
 import { formatCost, formatLatency, formatNumber } from "@/lib/utils";
 import {
   Table,
@@ -39,6 +40,7 @@ import {
   DEFAULT_TIME_RANGE_OPTIONS,
   TimeRangePicker,
 } from "@/components/ui/time-range-picker";
+import { EnvironmentFilter } from "@/components/ui/environment-filter";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,6 +86,20 @@ const RANGE_LABEL: Record<OverviewTimeRange, string> = {
   "30d": "last 30 days",
 };
 
+/**
+ * Validate the `?environment=` filter. The set of valid environments is
+ * tenant-specific (whatever values the SDK has emitted), so we accept any
+ * non-empty string within a sane length cap and rely on the backend query
+ * to return zero rows for nonsense values. Anything malformed degrades to
+ * "All environments" silently — same pattern as `parseRange` above.
+ */
+function parseEnvironment(raw: string | undefined): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > 40) return "";
+  return trimmed;
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -91,7 +107,7 @@ const RANGE_LABEL: Record<OverviewTimeRange, string> = {
 export default async function OverviewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ range?: string }>;
+  searchParams: Promise<{ range?: string; environment?: string }>;
 }) {
   const [org, query] = await Promise.all([getOrCreateOrg(), searchParams]);
   if (!org?.tenantId) {
@@ -99,11 +115,25 @@ export default async function OverviewPage({
   }
 
   const range = parseRange(query.range);
+  const environment = parseEnvironment(query.environment);
 
-  // Parallel fetch. Each query is tenant-scoped via the shared
-  // `requireTenantId()` guard inside `lib/queries/overview.ts`. A single
-  // ClickHouse outage takes down the whole page; the route-group `error.tsx`
-  // boundary surfaces a recoverable card per AGENTS.MD §5.3.
+  /**
+   * Parallel fetch. Each query is tenant-scoped via the shared
+   * `requireTenantId()` guard inside `lib/queries/overview.ts`. A single
+   * ClickHouse outage takes down the whole page; the route-group
+   * `error.tsx` boundary surfaces a recoverable card per AGENTS.MD §5.3.
+   *
+   * TODO(#41-backend): when backend lands B14 — environment filter on
+   * overview queries — pass `environment` to each call below so the
+   * dashboard actually filters by the user's selection. Until then the UI
+   * controls write to `?environment=` and the value round-trips through
+   * the URL, but every query still operates over all environments. Backend
+   * spec is in task #41 and `.agents/v1-scope.md` §V1.B. Concretely each
+   * call gains an optional `environment?: string` arg that, when set,
+   * appends `AND ResourceAttributes['deployment.environment'] = {env:String}`
+   * to the WHERE clause. `getDistinctEnvironments` already populates the
+   * dropdown; only the data fetches are pending.
+   */
   const [
     metrics,
     latency,
@@ -111,16 +141,28 @@ export default async function OverviewPage({
     spansByModel,
     costByModel,
     recentFailures,
+    environments,
     activeKeyCount,
   ] = await Promise.all([
+    // TODO(#41-backend): pass `environment` once #41 lands.
     getOverviewMetrics(org.tenantId),
+    // TODO(#41-backend): pass `environment` once #41 lands.
     getLatencyPercentiles(org.tenantId, range),
+    // TODO(#41-backend): pass `environment` once #41 lands.
     getErrorRateOverTime(org.tenantId, range),
+    // TODO(#41-backend): pass `environment` once #41 lands.
     getSpansOverTimeByModel(org.tenantId, range),
+    // TODO(#41-backend): pass `environment` once #41 lands.
     getCostByModel(org.tenantId, rangeToDays(range)),
+    // TODO(#41-backend): pass `environment` once #41 lands.
     getRecentFailures(org.tenantId, 5),
+    getDistinctEnvironments(org.tenantId),
     prisma.apiKey.count({ where: { orgId: org.id, active: true } }),
   ]);
+  // Touch `environment` so the lint doesn't complain while the value is
+  // round-tripping through the URL but isn't yet plumbed to the queries.
+  // Drop this `void` once #41-backend lands.
+  void environment;
 
   // Empty state: no spans at all means the user hasn't sent traces yet.
   // The §V1.B spec gates onboarding on `total_spans=0`. Use the SDK
@@ -162,11 +204,18 @@ export default async function OverviewPage({
               Tenant health snapshot for the {RANGE_LABEL[range]}.
             </p>
           </div>
-          <TimeRangePicker
-            value={range}
-            options={DEFAULT_TIME_RANGE_OPTIONS}
-            paramName="range"
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            <TimeRangePicker
+              value={range}
+              options={DEFAULT_TIME_RANGE_OPTIONS}
+              paramName="range"
+            />
+            <EnvironmentFilter
+              value={environment}
+              options={environments}
+              paramName="environment"
+            />
+          </div>
         </div>
       </div>
 

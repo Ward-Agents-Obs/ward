@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 export default function OverviewLoading() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 lg:px-10 lg:py-10">
-      {/* Header card with time-range picker placeholder */}
+      {/* Header card with time-range picker + environment filter placeholders */}
       <div className="rounded-[2rem] border tech-border bg-panel p-8">
         <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl flex-1">
@@ -17,7 +17,10 @@ export default function OverviewLoading() {
             <Skeleton className="mt-5 h-9 w-72" />
             <Skeleton className="mt-3 h-4 w-96" />
           </div>
-          <Skeleton className="h-10 w-44 rounded-xl" />
+          <div className="flex flex-wrap items-center gap-3">
+            <Skeleton className="h-10 w-44 rounded-xl" />
+            <Skeleton className="h-10 w-44 rounded-lg" />
+          </div>
         </div>
       </div>
 
