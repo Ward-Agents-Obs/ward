@@ -61,9 +61,14 @@ def require_api_key(request):
 
 class TestGatewayHealth:
     def test_health_endpoint(self):
+        # The /health handler in `gateway/cmd/gateway/main.go` writes the
+        # literal string "ok" — not JSON. Asserting on `.text` matches what
+        # the handler produces; the previous `.json()["status"]` form
+        # never matched and was masked by the autouse api-key skip until
+        # the full suite ran in CI.
         resp = requests.get(f"{GATEWAY_URL}/health")
         assert resp.status_code == 200
-        assert resp.json()["status"] == "ok"
+        assert resp.text == "ok"
 
 
 class TestGatewayAuth:
