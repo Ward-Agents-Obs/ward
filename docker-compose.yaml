@@ -32,8 +32,10 @@ services:
       # Optional. When set, the gateway runs an API-key hydrate pass at
       # startup against Postgres (#26) — Redis flushes / stale-snapshot
       # restores / dashboard partial-failure residue all converge before
-      # serving. Empty value skips hydrate (Redis-only mode).
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ward
+      # serving. Empty value skips hydrate (Redis-only mode). Operator can
+      # override with their own DSN; the default points at the in-stack
+      # postgres service (#31 — keep dev convenience without hardcoding).
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/ward}
       - DEFAULT_RATE_LIMIT=10000
     depends_on:
       redis:
@@ -65,8 +67,11 @@ services:
       - ./configs/clickhouse-config.xml:/etc/clickhouse-server/config.d/custom.xml
     environment:
       - CLICKHOUSE_DB=default
-      - CLICKHOUSE_USER=otel
-      - CLICKHOUSE_PASSWORD=otelpass
+      # #31 — dev defaults via substitution. Override in .env (or
+      # `--env-file`) for any non-local deploy. Production REQUIRES override
+      # — see README "Production deployment".
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-otel}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-otelpass}
     ulimits:
       nofile:
         soft: 262144
@@ -90,8 +95,9 @@ services:
     environment:
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_DATABASE=default
-      - CLICKHOUSE_USERNAME=otel
-      - CLICKHOUSE_PASSWORD=otelpass
+      # #31 — must match the values the `clickhouse` service runs as.
+      - CLICKHOUSE_USERNAME=${CLICKHOUSE_USER:-otel}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-otelpass}
       # Must match the gateway's COLLECTOR_AUTH_TOKEN. The bearertokenauth
       # extension verifies inbound OTLP requests against this value.
       - COLLECTOR_AUTH_TOKEN=${COLLECTOR_AUTH_TOKEN:?COLLECTOR_AUTH_TOKEN must be set in .env (run `openssl rand -hex 32`)}
@@ -113,9 +119,10 @@ services:
     ports:
       - "5434:5432"
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: ward
+      # #31 — dev defaults; override in .env for non-local deploys.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ward}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -138,11 +145,14 @@ services:
     environment:
       - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-}
       - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+      # #31 — credentials via substitution. The dashboard's
+      # `lib/clickhouse.ts` hard-fails if USER/PASSWORD missing, so a typo
+      # in the env file surfaces at boot rather than silently using defaults.
       # Always use service DNS; host DATABASE_URL in .env is for Prisma CLI on the machine.
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ward
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/ward}
       - CLICKHOUSE_URL=http://clickhouse:8123
-      - CLICKHOUSE_USER=otel
-      - CLICKHOUSE_PASSWORD=otelpass
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-otel}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-otelpass}
       - REDIS_URL=redis://redis:6379
     depends_on:
       postgres:
@@ -159,8 +169,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # #31 — dev defaults; production REQUIRES override (admin/admin would
+      # be an obvious initial-foothold gift to anyone scanning Grafana ports).
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
       - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource
       - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=grafana-clickhouse-datasource
     volumes:
