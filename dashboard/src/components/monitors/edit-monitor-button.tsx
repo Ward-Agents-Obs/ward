@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import { MonitorFormDialog } from "./monitor-form-dialog";
 import type { Monitor } from "@/lib/monitors";
 
@@ -22,6 +23,7 @@ export function EditMonitorButton({
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
+  const { toast } = useToast();
 
   return (
     <>
@@ -35,7 +37,17 @@ export function EditMonitorButton({
         initial={monitor}
         availableEnvironments={availableEnvironments}
         availableModels={availableModels}
-        onSaved={() => router.refresh()}
+        onSaved={() => {
+          router.refresh();
+          // Use the snapshotted name from the moment the dialog opened —
+          // the user might have renamed the monitor in this same edit and
+          // we want the "before" name in the toast for clarity. (Updating
+          // to "after" would require capturing the form value or refetching.)
+          toast({
+            title: `Updated "${monitor.name}"`,
+            variant: "success",
+          });
+        }}
       />
     </>
   );

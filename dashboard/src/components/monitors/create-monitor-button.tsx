@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import { MonitorFormDialog } from "./monitor-form-dialog";
 
 /**
@@ -25,6 +26,7 @@ export function CreateMonitorButton({
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
+  const { toast } = useToast();
 
   return (
     <>
@@ -38,10 +40,17 @@ export function CreateMonitorButton({
         availableEnvironments={availableEnvironments}
         availableModels={availableModels}
         onSaved={() => {
-          // The form action stub returns ok=false today, so onSaved doesn't
-          // fire until backend's #15 lands. Wired here so the swap-in is
-          // body-only — at that point router.refresh() rerenders the list.
+          // Refresh so the new row shows up in the list, then toast for
+          // explicit success feedback (the modal closes immediately, so
+          // without a toast there's no acknowledgement that the create
+          // landed).
           router.refresh();
+          toast({
+            title: "Monitor created",
+            description:
+              "It will be evaluated on the next cron tick (within 5 minutes).",
+            variant: "success",
+          });
         }}
       />
     </>
