@@ -1,29 +1,16 @@
-import Link from "next/link";
 import { Radar } from "lucide-react";
 import { getOrCreateOrg } from "@/lib/org";
 import { TenantContextFallback } from "@/components/tenant-context-fallback";
-import { getMonitors, type MonitorListRow } from "@/lib/monitors";
+import { getMonitors } from "@/lib/monitors";
 import { getDistinctEnvironments } from "@/lib/queries/sessions";
 import { getDistinctModels } from "@/lib/queries/traces";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { TimeRangePicker } from "@/components/ui/time-range-picker";
 import { CreateMonitorButton } from "@/components/monitors/create-monitor-button";
 import {
-  formatCondition,
-  formatMetricValue,
-  formatRelativeTime,
-  formatScope,
   resolveMonitorStatus,
   type MonitorRenderStatus,
 } from "@/components/monitors/monitor-format";
-import { MonitorStatusPill } from "@/components/monitors/monitor-status-pill";
+import { MonitorListTable } from "@/components/monitors/monitor-list-table";
 
 /**
  * V1 Monitors list page (F7 / task #18). Scaffolded against mock data via
@@ -163,61 +150,3 @@ export default async function MonitorsPage({
   );
 }
 
-function MonitorListTable({ monitors }: { monitors: MonitorListRow[] }) {
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Status</TableHead>
-          <TableHead>Name</TableHead>
-          <TableHead>Condition</TableHead>
-          <TableHead>Scope</TableHead>
-          <TableHead className="text-right">Last value</TableHead>
-          <TableHead className="text-right">Last evaluated</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {monitors.map((m) => {
-          const status = resolveMonitorStatus({
-            enabled: m.enabled,
-            state: m.state,
-          });
-          return (
-            <TableRow key={m.id}>
-              <TableCell>
-                <MonitorStatusPill status={status} />
-              </TableCell>
-              <TableCell>
-                <Link
-                  href={`/monitors/${m.id}`}
-                  className="font-medium text-foreground hover:underline"
-                >
-                  {m.name}
-                </Link>
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {formatCondition({
-                  metric: m.metric,
-                  comparator: m.comparator,
-                  threshold: m.threshold,
-                  windowMinutes: m.windowMinutes,
-                })}
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {formatScope({ environment: m.environment, model: m.model })}
-              </TableCell>
-              <TableCell className="text-right tabular-nums">
-                {m.lastValue !== null
-                  ? formatMetricValue(m.metric, m.lastValue)
-                  : "—"}
-              </TableCell>
-              <TableCell className="text-right text-muted-foreground">
-                {formatRelativeTime(m.lastEvaluatedAt)}
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
-  );
-}

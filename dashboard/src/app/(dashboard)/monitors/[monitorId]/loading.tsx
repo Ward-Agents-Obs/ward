@@ -48,6 +48,16 @@ export default function MonitorDetailLoading() {
           ))}
         </div>
       </section>
+
+      <section className="rounded-[1.5rem] border tech-border bg-panel p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-4 w-44" />
+            <Skeleton className="h-3 w-full max-w-md" />
+          </div>
+          <Skeleton className="h-8 w-36 rounded-xl" />
+        </div>
+      </section>
     </main>
   );
 }
