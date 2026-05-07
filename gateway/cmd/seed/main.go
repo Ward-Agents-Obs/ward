@@ -70,7 +70,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	keyPrefix := plain[:11] // matches `dashboard/src/lib/api-keys.ts:9` slice convention
+	keyPrefix := plain[:12] + "..." // matches `dashboard/src/lib/api-keys.ts:9` exactly so the keys page renders both sources identically
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
