@@ -79,7 +79,7 @@ jobs:
           echo "::add-mask::$token"
           echo "value=$token" >> "$GITHUB_OUTPUT"
 
-      - name: Bring up docker-compose stack
+      - name: Bring up data services + apply Prisma migrations
         env:
           COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
         run: |
@@ -88,19 +88,38 @@ jobs:
           # but compose otherwise exits non-zero.
           export NEXT_PUBLIC_SUPABASE_URL="https://example.supabase.co"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="placeholder"
-          # Bring up only the data-plane services this test needs.
-          docker compose up -d redis clickhouse otel-collector gateway
-          # Wait for healthchecks. clickhouse + gateway expose them; redis is
-          # ready almost instantly.
+          # Bring up Postgres + Redis + ClickHouse + collector first so the
+          # gateway has the schema it needs for the API-key hydrate (#26).
+          docker compose up -d postgres redis clickhouse otel-collector
+          # Wait for postgres + clickhouse healthchecks.
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8123/ping > /dev/null \
-               && curl -sf http://localhost:8080/health > /dev/null; then
-              echo "stack is up"; break
+               && docker compose ps postgres --format '{{ "{{" }}.Health{{ "}}" }}' | grep -q healthy; then
+              echo "data services are up"; break
             fi
-            echo "waiting for stack ($i)..."; sleep 2
+            echo "waiting for data services ($i)..."; sleep 2
           done
-          # Final check; fail fast if anything's still down.
-          curl -sf http://localhost:8123/ping
+          # Apply Prisma migrations against the fresh Postgres so the gateway's
+          # hydrate query (`SELECT … FROM api_keys ⨝ organizations`) doesn't
+          # error on missing tables. Maps to docker-compose's port 5434.
+          (cd dashboard && DATABASE_URL=postgresql://postgres:postgres@localhost:5434/ward npx prisma migrate deploy)
+
+      - name: Bring up gateway
+        env:
+          COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+        run: |
+          export NEXT_PUBLIC_SUPABASE_URL="https://example.supabase.co"
+          export NEXT_PUBLIC_SUPABASE_ANON_KEY="placeholder"
+          docker compose up -d gateway
+          # Wait for the gateway healthcheck. Hydrate runs synchronously
+          # inside the container before the listener starts, so /health
+          # responding 200 is sufficient evidence hydrate completed.
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/health > /dev/null; then
+              echo "gateway is up"; break
+            fi
+            echo "waiting for gateway ($i)..."; sleep 2
+          done
           curl -sf http://localhost:8080/health
 
       - name: Seed two tenants via gateway/cmd/seed
@@ -166,6 +185,18 @@ jobs:
             src/tests/test_gateway_integration.py::TestCollectorAuth \
             -v --tb=short
 
+      - name: Run API-key hydrate regression tests
+        env:
+          # TestApiKeyHydrate writes Org + ApiKey rows directly to Postgres,
+          # plants Redis state, restarts the gateway, and asserts hydrate
+          # converged correctly. Needs the same token to bring the gateway
+          # back up after each restart.
+          COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+        run: |
+          python -m pytest \
+            src/tests/test_gateway_integration.py::TestApiKeyHydrate \
+            -v --tb=short
+
       - name: Dump container logs on failure
         if: failure()
         env:
@@ -176,6 +207,7 @@ jobs:
           echo "=== otel-collector ==="; docker compose logs otel-collector || true
           echo "=== clickhouse ===";     docker compose logs clickhouse || true
           echo "=== redis ===";          docker compose logs redis || true
+          echo "=== postgres ===";       docker compose logs postgres || true
 
       - name: Tear down docker-compose
         if: always()

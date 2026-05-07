@@ -29,6 +29,11 @@ services:
       # Required — gateway refuses to start with an empty value (#25, F2/F3).
       - COLLECTOR_AUTH_TOKEN=${COLLECTOR_AUTH_TOKEN:?COLLECTOR_AUTH_TOKEN must be set in .env (run `openssl rand -hex 32`)}
       - REDIS_ADDR=redis:6379
+      # Optional. When set, the gateway runs an API-key hydrate pass at
+      # startup against Postgres (#26) — Redis flushes / stale-snapshot
+      # restores / dashboard partial-failure residue all converge before
+      # serving. Empty value skips hydrate (Redis-only mode).
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/ward
       - DEFAULT_RATE_LIMIT=10000
     depends_on:
       redis:
@@ -36,6 +41,11 @@ services:
       otel-collector:
         # condition: service_healthy
         condition: service_started
+      # Required for the startup hydrate (#26) — see DATABASE_URL above.
+      # Use service_healthy so we don't race the migrations dashboard
+      # applies when DATABASE_URL points at a freshly-up postgres.
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 10s

@@ -115,6 +115,25 @@ variable "collector_auth_token" {
   sensitive = true
 }
 
+variable "gateway_database_url" {
+  description = <<-EOT
+    Postgres connection string the gateway uses for the API-key hydrate
+    pass at startup (see `gateway/internal/hydrate` and #26). The dashboard
+    owns the schema (Prisma); the gateway is read-mostly and only writes to
+    converge revoked-anywhere state back to Postgres.
+
+    Empty disables hydrate (gateway runs in Redis-only mode — useful for
+    early-stage deploys before Postgres is reachable from the gateway VPC
+    but loses the consistency guard #26 provides).
+
+    Operational note: same Secrets Manager migration trajectory as
+    `collector_auth_token` and `clickhouse_password` — see #35.
+  EOT
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
 variable "domain_name" {
   description = "Domain name for the gateway (e.g. ingest.ward.dev). Leave empty to skip DNS."
   type        = string

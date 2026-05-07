@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"os"
@@ -10,11 +11,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	_ "github.com/jackc/pgx/v5/stdlib" // pgx as the Postgres driver for `database/sql`
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/ward-dev/gateway/internal/config"
+	"github.com/ward-dev/gateway/internal/hydrate"
 	"github.com/ward-dev/gateway/internal/middleware"
 	"github.com/ward-dev/gateway/internal/proxy"
 	"github.com/ward-dev/gateway/internal/ratelimit"
@@ -50,6 +53,21 @@ func main() {
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		log.Fatal().Err(err).Str("redis_addr", cfg.RedisAddr).Msg("cannot connect to redis")
+	}
+
+	// Best-effort API-key hydrate: rebuild Redis from Postgres on startup so
+	// that Redis flushes / stale-snapshot restores / dashboard partial-failure
+	// residue all converge before we serve traffic. Failure is non-fatal —
+	// availability beats strict-consistency-at-boot, and Redis already has
+	// the cache. See internal/hydrate package doc and #26 for details.
+	if cfg.DatabaseURL != "" {
+		hydrateCtx, hydrateCancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := runHydrate(hydrateCtx, cfg.DatabaseURL, rdb); err != nil {
+			log.Warn().Err(err).Msg("hydrate failed at startup; serving with whatever Redis has")
+		}
+		hydrateCancel()
+	} else {
+		log.Info().Msg("DATABASE_URL not set; skipping API-key hydrate (Redis-only mode)")
 	}
 
 	limiter := ratelimit.NewLimiter(rdb)
@@ -93,4 +111,23 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal().Err(err).Msg("gateway exited")
 	}
+}
+
+// runHydrate opens a short-lived Postgres connection, executes the
+// hydrate pass, and closes the connection. Kept as a separate function so
+// the connection lifecycle is bounded — the gateway doesn't hold an open
+// Postgres connection across its serving lifetime, only at boot.
+func runHydrate(ctx context.Context, dsn string, rdb *redis.Client) error {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if err := db.PingContext(ctx); err != nil {
+		return err
+	}
+
+	_, err = hydrate.Hydrate(ctx, db, rdb)
+	return err
 }

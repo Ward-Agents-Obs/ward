@@ -52,6 +52,7 @@ def require_api_key(request):
     if request.cls is not None and request.cls.__name__ in {
         "TestTenantIsolation",
         "TestCollectorAuth",
+        "TestApiKeyHydrate",
     }:
         return
     if not API_KEY:
@@ -634,4 +635,231 @@ class TestCollectorAuth:
             f"This would mean the gateway's own outbound token doesn't match "
             f"the collector's configured token — probably a deploy mismatch. "
             f"stderr={stderr!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# #26 — Postgres↔Redis API-key hydrate regression tests
+# ---------------------------------------------------------------------------
+#
+# These verify the gateway's startup hydrate (`gateway/internal/hydrate`):
+# rebuilding Redis from Postgres on boot. Two scenarios — the Redis-flush
+# recovery and the option-(b) revoked-anywhere-wins convergence — together
+# cover the failure modes #26 was designed to close.
+#
+# Heavy: each test pokes Postgres + Redis directly and `docker compose
+# restart gateway`s. Skipped if docker isn't available.
+
+
+import hashlib
+
+
+def _docker_exec(container: str, *args: str) -> tuple[int, str, str]:
+    """Run a command inside an existing compose container. Returns
+    (returncode, stdout, stderr)."""
+    cmd = ["docker", "exec", container, *args]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return result.returncode, result.stdout, result.stderr
+
+
+def _psql(query: str) -> str:
+    """Execute SQL against the dev Postgres (ward-postgres container) and
+    return the trimmed output. Raises on non-zero exit."""
+    rc, stdout, stderr = _docker_exec(
+        "ward-postgres",
+        "psql", "-U", "postgres", "-d", "ward", "-tAc", query,
+    )
+    if rc != 0:
+        raise RuntimeError(f"psql failed: {stderr.strip()} (query={query!r})")
+    return stdout.strip()
+
+
+def _redis(*args: str) -> str:
+    rc, stdout, stderr = _docker_exec("redis", "redis-cli", *args)
+    if rc != 0:
+        raise RuntimeError(f"redis-cli failed: {stderr.strip()} (args={args!r})")
+    return stdout.strip()
+
+
+def _restart_gateway_and_wait(timeout: float = 30.0) -> None:
+    """Restart the gateway container and block until /health returns 200.
+    Raises on timeout."""
+    subprocess.run(
+        ["docker", "compose", "restart", "gateway"],
+        capture_output=True, text=True, timeout=60, check=True,
+    )
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = requests.get(f"{GATEWAY_URL}/health", timeout=2)
+            if r.status_code == 200:
+                # Give the gateway a moment to finish hydrate after the health
+                # endpoint comes up — health is registered before hydrate runs.
+                time.sleep(1.0)
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(0.5)
+    raise RuntimeError("gateway didn't return healthy within timeout after restart")
+
+
+class TestApiKeyHydrate:
+    """Regression coverage for `gateway/internal/hydrate`. Each test plants a
+    fixture row in Postgres + Redis, restarts the gateway, then asserts the
+    Redis-side outcome. Cleans up its own rows in `teardown_method`."""
+
+    @classmethod
+    def setup_class(cls):
+        if shutil.which("docker") is None:
+            pytest.skip("docker CLI not available on the test runner")
+        # Confirm the postgres + redis + gateway containers exist. If any
+        # are missing, the user hasn't brought up the stack — skip cleanly.
+        for name in ("ward-postgres", "redis", "gateway"):
+            result = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", name],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0 or result.stdout.strip() != "true":
+                pytest.skip(
+                    f"container {name} not running — bring up the stack with "
+                    "`docker compose up -d` first"
+                )
+        # Sanity: Postgres must have the migrated schema (api_keys table).
+        # If migrations weren't applied (e.g. dashboard never started),
+        # skip — this is an environment problem, not a test failure.
+        try:
+            _psql("SELECT 1 FROM api_keys LIMIT 1;")
+        except RuntimeError:
+            pytest.skip(
+                "Postgres has no api_keys table — bring up the dashboard "
+                "container or run `npx prisma migrate deploy` from dashboard/"
+            )
+
+    def setup_method(self):
+        self.run_id = uuid.uuid4().hex[:8]
+        self.tenant_id = f"hydratetest-{self.run_id}"
+        self.org_slug = f"hydratetest-{self.run_id}"
+        self.org_id = ""  # set by _seed_fixture
+        self.key_hash = ""
+        self.plain_key = f"ward_hydrate_{self.run_id}_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    def teardown_method(self):
+        # Best-effort cleanup. Postgres cascades api_keys when the org is
+        # dropped; Redis cleanup is explicit.
+        try:
+            _psql(f"DELETE FROM organizations WHERE slug = '{self.org_slug}';")
+        except RuntimeError:
+            pass
+        if self.key_hash:
+            try:
+                _redis("DEL", f"apikey:{self.key_hash}")
+            except RuntimeError:
+                pass
+
+    # -- helpers --
+
+    def _seed_fixture(self, *, active: bool = True, also_in_redis: bool = False):
+        """Insert an Organization + ApiKey row in Postgres. If `also_in_redis`,
+        mirror the active=true marker into Redis (matches the real dashboard
+        flow). Returns the SHA-256 hash of the plaintext key.
+
+        psql's `-tAc` output for `INSERT ... RETURNING` mixes the value with
+        the command tag (`INSERT 0 1`), so we split into a quiet INSERT + a
+        SELECT-by-slug to read the id cleanly. The slug is unique per run
+        id, making the SELECT exact."""
+        self.key_hash = hashlib.sha256(self.plain_key.encode()).hexdigest()
+        _psql(
+            "INSERT INTO organizations (id, name, slug, tenant_id, tier, rate_limit) "
+            f"VALUES (gen_random_uuid(), 'hydrate test {self.run_id}', "
+            f"'{self.org_slug}', '{self.tenant_id}', 'free', 10000);"
+        )
+        self.org_id = _psql(
+            f"SELECT id FROM organizations WHERE slug = '{self.org_slug}';"
+        )
+        _psql(
+            "INSERT INTO api_keys (id, org_id, name, key_prefix, key_hash, active) "
+            f"VALUES (gen_random_uuid(), '{self.org_id}', "
+            f"'hydrate-{self.run_id}', 'ward_hydrate…', "
+            f"'{self.key_hash}', {str(active).lower()});"
+        )
+        if also_in_redis:
+            redis_active = "true" if active else "false"
+            _redis(
+                "HSET", f"apikey:{self.key_hash}",
+                "tenant_id", self.tenant_id,
+                "tier", "free",
+                "rate_limit", "10000",
+                "active", redis_active,
+            )
+        return self.key_hash
+
+    def test_hydrate_repopulates_redis_after_flush(self):
+        """Postgres has an active key; Redis is empty (post-flush). After
+        gateway restart, hydrate should populate Redis with the full row
+        (tenant_id + tier + rate_limit + active=true)."""
+        self._seed_fixture(active=True, also_in_redis=False)
+
+        # Confirm pre-restart state: Redis is empty for this hash.
+        assert _redis("EXISTS", f"apikey:{self.key_hash}") == "0", (
+            "fixture setup leaked into Redis"
+        )
+
+        _restart_gateway_and_wait()
+
+        # After restart, hydrate should have written the full row.
+        tenant_in_redis = _redis("HGET", f"apikey:{self.key_hash}", "tenant_id")
+        active_in_redis = _redis("HGET", f"apikey:{self.key_hash}", "active")
+        rate_limit_in_redis = _redis("HGET", f"apikey:{self.key_hash}", "rate_limit")
+        assert tenant_in_redis == self.tenant_id, (
+            f"expected tenant_id={self.tenant_id} in Redis, got {tenant_in_redis!r}"
+        )
+        assert active_in_redis == "true", (
+            f"expected active=true in Redis, got {active_in_redis!r}"
+        )
+        assert rate_limit_in_redis == "10000", (
+            f"expected rate_limit=10000 in Redis, got {rate_limit_in_redis!r}"
+        )
+
+    def test_hydrate_converges_postgres_when_redis_says_revoked(self):
+        """Option-(b) regression: Postgres still says active=true (because
+        the dashboard's revokeApiKey hit a Postgres failure after Redis
+        succeeded), but Redis correctly says active=false. On restart,
+        hydrate should NOT re-activate the key in Redis; instead it must
+        flip Postgres to active=false to converge."""
+        self._seed_fixture(active=True, also_in_redis=False)
+        # Plant Redis active=false directly — simulates the partial-failure
+        # state left by an inverted-order revoke whose Postgres step failed.
+        _redis(
+            "HSET", f"apikey:{self.key_hash}",
+            "tenant_id", self.tenant_id,
+            "tier", "free",
+            "rate_limit", "10000",
+            "active", "false",
+        )
+
+        # Sanity pre-restart: Postgres still active=true.
+        pg_active_before = _psql(
+            f"SELECT active FROM api_keys WHERE key_hash = '{self.key_hash}';"
+        )
+        assert pg_active_before == "t", (
+            f"fixture: expected Postgres active=true, got {pg_active_before!r}"
+        )
+
+        _restart_gateway_and_wait()
+
+        # Postgres should now reflect the revoke.
+        pg_active_after = _psql(
+            f"SELECT active FROM api_keys WHERE key_hash = '{self.key_hash}';"
+        )
+        assert pg_active_after == "f", (
+            f"hydrate failed to converge Postgres to revoked state. "
+            f"Expected active=f, got {pg_active_after!r}. "
+            f"Without convergence, the next restart would resurrect this revoked key."
+        )
+        # Redis must STILL say active=false — hydrate must not have undone the revoke.
+        active_in_redis = _redis("HGET", f"apikey:{self.key_hash}", "active")
+        assert active_in_redis == "false", (
+            f"REGRESSION: hydrate re-activated a revoked key in Redis. "
+            f"Expected active=false, got {active_in_redis!r}. "
+            f"The 'revoked anywhere wins' rule is broken."
         )

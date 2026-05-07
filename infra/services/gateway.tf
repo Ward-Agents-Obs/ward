@@ -28,6 +28,11 @@ resource "aws_ecs_task_definition" "gateway" {
       # #35 migrates this and `clickhouse_password` to ECS `secrets` array
       # sourced from AWS Secrets Manager.
       { name = "COLLECTOR_AUTH_TOKEN", value = var.collector_auth_token },
+      # Postgres DSN for the startup API-key hydrate pass (#26). Empty
+      # disables hydrate; the gateway then runs in Redis-only mode and
+      # loses the Postgres↔Redis convergence guard. Same Secrets Manager
+      # trajectory as the other secrets here — see #35.
+      { name = "DATABASE_URL", value = var.gateway_database_url },
     ]
 
     logConfiguration = {
