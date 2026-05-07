@@ -27,12 +27,21 @@ const DOT_STYLES: Record<MonitorRenderStatus, string> = {
 export function MonitorStatusPill({
   status,
   className,
+  id,
 }: {
   status: MonitorRenderStatus;
   className?: string;
+  /**
+   * Optional DOM id so callers can wire `aria-describedby` from a sibling
+   * heading (e.g. the monitor detail H1) to this pill. Without it, screen
+   * readers might not announce status when the pill renders inline next
+   * to a heading.
+   */
+  id?: string;
 }) {
   return (
     <span
+      id={id}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
         STYLES[status],

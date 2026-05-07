@@ -104,10 +104,22 @@ export default async function MonitorDetailPage({
         <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+              {/*
+                aria-describedby points at the status pill so screen readers
+                announce "Cost spike — production. Described as: Firing." A
+                visible-only pill would otherwise be missed by SR users when
+                a monitor is actively breaching.
+              */}
+              <h1
+                className="text-3xl font-semibold tracking-tight text-foreground"
+                aria-describedby={`monitor-status-${monitor.id}`}
+              >
                 {monitor.name}
               </h1>
-              <MonitorStatusPill status={status} />
+              <MonitorStatusPill
+                status={status}
+                id={`monitor-status-${monitor.id}`}
+              />
             </div>
             <p className="mt-2 text-sm font-mono text-muted-foreground">
               {monitor.id}
