@@ -39,6 +39,16 @@ count="$(printf '%s\n' "${TESTS_LIST}" | wc -l | tr -d ' ')"
 echo "[run-tenant-isolation-tests] found ${count} test script(s):"
 printf '  - %s\n' ${TESTS_LIST}
 
+# `--env-file=.env` lets scripts that import the Prisma client (which reads
+# DATABASE_URL on instantiation) work the same as the Prisma CLI. Variables
+# already set in the shell win over the file, so the existing ClickHouse-only
+# scripts are unaffected — they read CLICKHOUSE_URL/USER/PASSWORD from the
+# caller's env as before. Requires Node >= 20.6.
+ENV_FLAG=()
+if [[ -f .env ]]; then
+  ENV_FLAG=(--env-file=.env)
+fi
+
 failed=0
 while IFS= read -r f; do
   [[ -z "${f}" ]] && continue
@@ -46,7 +56,7 @@ while IFS= read -r f; do
   echo "================================================================"
   echo "  ${f}"
   echo "================================================================"
-  if ! npx tsx "${f}"; then
+  if ! npx tsx "${ENV_FLAG[@]}" "${f}"; then
     failed=1
     echo "[run-tenant-isolation-tests] FAIL: ${f}" >&2
   fi

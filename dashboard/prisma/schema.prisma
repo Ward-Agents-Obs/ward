@@ -17,6 +17,7 @@ model Organization {
   createdAt  DateTime    @default(now()) @map("created_at")
   members    OrgMember[]
   apiKeys    ApiKey[]
+  monitors   Monitor[]
 
   @@map("organizations")
 }
@@ -45,4 +46,58 @@ model ApiKey {
   createdAt  DateTime     @default(now()) @map("created_at")
 
   @@map("api_keys")
+}
+
+// Monitor — alerting rule on cost / latency_p95 / error_rate. State machine
+// is owned by the cron worker (#16). Field shape mirrors `MonitorInput` /
+// `Monitor` in `dashboard/src/lib/monitors.ts` so frontend's hand-rolled
+// validateMonitorInput can be swapped for `MonitorInputSchema.parse()` body-only
+// in #15. Source-of-truth design: `.agents/monitors-design.md` §2.
+//
+// `metric` / `comparator` / `windowMinutes` are deliberately NOT Prisma enums
+// — zod at the action layer is the source of truth, and enum migrations are
+// painful when V1.1 widens the allowlist (e.g. add `latency_p99`, `8h` window).
+model Monitor {
+  id              String         @id @default(uuid())
+  orgId           String         @map("org_id")
+  org             Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?
+  metric          String         // 'cost' | 'latency_p95' | 'error_rate'
+  comparator      String         // 'gt' | 'gte' | 'lt' | 'lte'
+  threshold       Float
+  windowMinutes   Int            @map("window_minutes") // 5 | 15 | 60 | 360 | 1440
+  environment     String?        // null = all envs
+  model           String?        // null = all models
+  enabled         Boolean        @default(true)
+  state           String         @default("ok") // 'ok' | 'firing'
+  lastEvaluatedAt DateTime?      @map("last_evaluated_at")
+  lastValue       Float?         @map("last_value")
+  createdBy       String?        @map("created_by")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  triggers        MonitorTrigger[]
+
+  // Hot read path: banner's count(orgId, state='firing') runs on every
+  // dashboard render plus 30s F10 polls. List page status filter benefits too.
+  @@index([orgId, state])
+  @@map("monitors")
+}
+
+// MonitorTrigger — one row per fire/resolve transition. Worker writes the row
+// on ok→firing; updates `resolvedAt` on firing→ok. Threshold + comparator are
+// snapshotted at fire time so the detail page's history table is stable even
+// if the parent monitor is later edited.
+model MonitorTrigger {
+  id           String   @id @default(uuid())
+  monitorId    String   @map("monitor_id")
+  monitor      Monitor  @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  firedAt      DateTime @default(now()) @map("fired_at")
+  resolvedAt   DateTime? @map("resolved_at")
+  triggerValue Float    @map("trigger_value")
+  threshold    Float
+  comparator   String
+
+  @@index([monitorId, firedAt])
+  @@map("monitor_triggers")
 }
