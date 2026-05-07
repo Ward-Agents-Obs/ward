@@ -20,6 +20,10 @@ Add a `--key <plain>` flag. When set, skip generation and write hash of the supp
 
 When `--key` is unset, behavior is today's: random generation. Production seeds stay random.
 
+## 3a. Test file convention
+
+Dashboard has no jest/vitest runner (debug-expert confirmed). Existing convention is tsx scripts under `dashboard/__tests__/` run via `npx tsx <file>` (see `overview-tenant-isolation.ts`, `getspans-tenant-isolation.ts`). Format-drift guard goes at `dashboard/__tests__/api-key-format-guard.ts` and is added to `dashboard/scripts/run-tenant-isolation-tests.sh` so it runs in CI alongside the isolation tests.
+
 ## 4. Trust boundary
 
 **Operator-only, never user-facing.** Reads `DATABASE_URL` and Redis credentials from env; both grant write access to the entire tenant key store. Ship as a `make seed` target (binary already gitignored per #29). Never deploy to customer-facing infrastructure — local demo + ops only.
