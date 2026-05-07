@@ -41,6 +41,23 @@ func main() {
 		)
 	}
 
+	// Fail closed on Redis auth too (#34). Transitive fail-closed via
+	// `rdb.Ping → NOAUTH` only fires if Redis itself is correctly
+	// configured to require auth — if an operator misconfigures the redis
+	// task to run with `--requirepass ""`, the gateway would silently
+	// connect anonymously and never know. The explicit check here
+	// surfaces a forgotten gateway-side `REDIS_PASSWORD` at boot,
+	// matching the `lib/clickhouse.ts:requireEnv()` pattern (#31) and
+	// `lib/redis.ts:requireEnv()` on the dashboard side.
+	if cfg.RedisPassword == "" {
+		log.Fatal().Msg(
+			"REDIS_PASSWORD is required; refusing to start. " +
+				"Generate via `openssl rand -hex 32` and set in the gateway AND the redis " +
+				"service's environment (must match). Empty values would let a misconfigured " +
+				"redis task accept anonymous connections without the gateway noticing.",
+		)
+	}
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,

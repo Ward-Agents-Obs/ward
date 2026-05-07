@@ -1,3 +1,18 @@
+# Redis password lives in Secrets Manager so it never appears in
+# `aws_ecs_task_definition.environment` plaintext (#34). Both the redis
+# container and the gateway task pull it via the ECS `secrets` array; the
+# IAM execution role's `secretsmanager:GetSecretValue` permission scopes
+# strictly to this ARN (see `infra/ecs.tf::ecs_execution_secrets`).
+resource "aws_secretsmanager_secret" "redis_password" {
+  name        = "${var.project_name}-redis-password"
+  description = "Redis AUTH password for the Ward gateway; required (#34)"
+}
+
+resource "aws_secretsmanager_secret_version" "redis_password" {
+  secret_id     = aws_secretsmanager_secret.redis_password.id
+  secret_string = var.redis_password
+}
+
 resource "aws_service_discovery_service" "redis" {
   name = "redis"
 
@@ -39,7 +54,14 @@ resource "aws_ecs_task_definition" "redis" {
     image     = "redis:7-alpine"
     essential = true
 
-    command = ["redis-server", "--appendonly", "yes", "--dir", "/data"]
+    # ECS injects `REDIS_PASSWORD` as an env var (via the `secrets` array
+    # below) but Redis's `--requirepass` only accepts an arg, not env, so
+    # we wrap with sh -c to expand it on the command line. The healthcheck
+    # uses the same `-a` form for the same reason.
+    command = [
+      "sh", "-c",
+      "exec redis-server --appendonly yes --dir /data --requirepass \"$REDIS_PASSWORD\"",
+    ]
 
     portMappings = [{
       containerPort = 6379
@@ -53,6 +75,11 @@ resource "aws_ecs_task_definition" "redis" {
       readOnly      = false
     }]
 
+    secrets = [{
+      name      = "REDIS_PASSWORD"
+      valueFrom = aws_secretsmanager_secret.redis_password.arn
+    }]
+
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -63,7 +90,7 @@ resource "aws_ecs_task_definition" "redis" {
     }
 
     healthCheck = {
-      command     = ["CMD", "redis-cli", "ping"]
+      command     = ["CMD", "sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping"]
       interval    = 10
       timeout     = 5
       retries     = 5

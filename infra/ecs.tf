@@ -38,6 +38,29 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Custom inline policy granting `secretsmanager:GetSecretValue` on the
+# specific secret ARNs the ECS tasks reference via their `secrets` arrays.
+# Started in #34 with the Redis password; #35 will extend the resources
+# list with the ClickHouse + collector secrets when those migrate off the
+# task definition `environment` block.
+#
+# Scoped to the exact secret ARNs (not `arn:aws:secretsmanager:*:*:*`) so
+# a future task that accidentally lands on this shared role can't read
+# unrelated secrets in the account.
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name = "${var.project_name}-ecs-execution-secrets"
+  role = aws_iam_role.ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = [aws_secretsmanager_secret.redis_password.arn]
+    }]
+  })
+}
+
 # Task role for services that need AWS API access
 resource "aws_iam_role" "ecs_task" {
   name = "${var.project_name}-ecs-task"

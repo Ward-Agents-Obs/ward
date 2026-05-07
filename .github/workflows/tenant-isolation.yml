@@ -69,19 +69,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest requests opentelemetry-proto
 
-      - name: Generate collector auth token
+      - name: Generate collector + redis secrets
         id: token
         run: |
-          # Fresh per-run token. Both the gateway and the otel-collector read
-          # this from COLLECTOR_AUTH_TOKEN; the gateway refuses to start if
-          # empty (#25). Mask it so it never leaks into logs.
-          token="$(openssl rand -hex 32)"
-          echo "::add-mask::$token"
-          echo "value=$token" >> "$GITHUB_OUTPUT"
+          # Fresh per-run secrets. Both the gateway and the otel-collector
+          # read COLLECTOR_AUTH_TOKEN; the gateway refuses to start if empty
+          # (#25). REDIS_PASSWORD: the redis service runs with `--requirepass
+          # $REDIS_PASSWORD`, the gateway and dashboard hard-fail at boot if
+          # empty (#34). Both masked so they never leak into logs.
+          collector="$(openssl rand -hex 32)"
+          redis="$(openssl rand -hex 32)"
+          echo "::add-mask::$collector"
+          echo "::add-mask::$redis"
+          {
+            echo "value=$collector"
+            echo "redis_password=$redis"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Bring up data services + apply Prisma migrations
         env:
           COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
         run: |
           # Provide harmless dummy Supabase env so the dashboard container
           # build doesn't fail. The dashboard service is unused by these tests
@@ -107,6 +115,7 @@ jobs:
       - name: Bring up gateway
         env:
           COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
         run: |
           export NEXT_PUBLIC_SUPABASE_URL="https://example.supabase.co"
           export NEXT_PUBLIC_SUPABASE_ANON_KEY="placeholder"
@@ -128,8 +137,10 @@ jobs:
         env:
           # seed talks to Redis directly + opens its own Postgres connection
           # for the dual-write (#27). DATABASE_URL maps to the host port the
-          # postgres compose service exposes (5434:5432).
+          # postgres compose service exposes (5434:5432). REDIS_PASSWORD is
+          # required since #34 — seed's Redis client uses it for AUTH.
           REDIS_ADDR: localhost:6379
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
           DATABASE_URL: postgresql://postgres:postgres@localhost:5434/ward
         run: |
           set -euo pipefail
@@ -159,6 +170,9 @@ jobs:
           CLICKHOUSE_URL: http://localhost:8123
           CLICKHOUSE_USER: otel
           CLICKHOUSE_PASSWORD: otelpass
+          # #34 — `lib/redis.ts` hard-fails at module load without this.
+          # Tsx tests import that module via the Prisma-using helpers.
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
         run: bash scripts/run-tenant-isolation-tests.sh
 
       - name: Run gateway spoof regression tests
@@ -167,6 +181,10 @@ jobs:
           CLICKHOUSE_URL: http://localhost:8123
           CLICKHOUSE_USER: otel
           CLICKHOUSE_PASSWORD: otelpass
+          # #34 — `_redis()` helper auto-includes `-a $REDIS_PASSWORD`
+          # when this is set; required for any test that pokes Redis via
+          # docker exec since the redis service runs with --requirepass.
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
           WARD_TEST_API_KEY: ${{ steps.seed.outputs.key_a }}
           WARD_TEST_TENANT_ID: ${{ steps.seed.outputs.tenant_a }}
           WARD_TEST_API_KEY_B: ${{ steps.seed.outputs.key_b }}
@@ -191,18 +209,32 @@ jobs:
         env:
           # TestApiKeyHydrate writes Org + ApiKey rows directly to Postgres,
           # plants Redis state, restarts the gateway, and asserts hydrate
-          # converged correctly. Needs the same token to bring the gateway
-          # back up after each restart.
+          # converged correctly. Needs COLLECTOR_AUTH_TOKEN for the gateway
+          # restart and REDIS_PASSWORD so `_redis()` can authenticate.
           COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
         run: |
           python -m pytest \
             src/tests/test_gateway_integration.py::TestApiKeyHydrate \
+            -v --tb=short
+
+      - name: Run Redis-auth fail-closed tests
+        env:
+          # TestRedisAuth spawns one-shot gateway containers with various
+          # REDIS_PASSWORD values and asserts the gateway exits non-zero on
+          # missing/wrong values. Needs the live token so the gateway gets
+          # past the collector-auth check before reaching the redis-auth one.
+          COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+        run: |
+          python -m pytest \
+            src/tests/test_gateway_integration.py::TestRedisAuth \
             -v --tb=short
 
       - name: Dump container logs on failure
         if: failure()
         env:
           # Compose substitution requires the token even for `logs`.
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
           COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
         run: |
           echo "=== gateway ===";        docker compose logs gateway || true
@@ -215,4 +247,5 @@ jobs:
         if: always()
         env:
           COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+          REDIS_PASSWORD: ${{ steps.token.outputs.redis_password }}
         run: docker compose down -v

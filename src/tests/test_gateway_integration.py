@@ -53,6 +53,7 @@ def require_api_key(request):
         "TestTenantIsolation",
         "TestCollectorAuth",
         "TestApiKeyHydrate",
+        "TestRedisAuth",
     }:
         return
     if not API_KEY:
@@ -680,7 +681,16 @@ def _psql(query: str) -> str:
 
 
 def _redis(*args: str) -> str:
-    rc, stdout, stderr = _docker_exec("redis", "redis-cli", *args)
+    """Run a `redis-cli` command inside the redis container. Auto-injects
+    `-a $REDIS_PASSWORD --no-auth-warning` when the env is set, so tests
+    keep working after #34 turned on Redis auth without each test having
+    to know about it."""
+    cli_args = ["redis-cli"]
+    pw = os.getenv("REDIS_PASSWORD", "")
+    if pw:
+        cli_args.extend(["-a", pw, "--no-auth-warning"])
+    cli_args.extend(args)
+    rc, stdout, stderr = _docker_exec("redis", *cli_args)
     if rc != 0:
         raise RuntimeError(f"redis-cli failed: {stderr.strip()} (args={args!r})")
     return stdout.strip()
@@ -867,4 +877,113 @@ class TestApiKeyHydrate:
             f"REGRESSION: hydrate re-activated a revoked key in Redis. "
             f"Expected active=false, got {active_in_redis!r}. "
             f"The 'revoked anywhere wins' rule is broken."
+        )
+
+
+# ---------------------------------------------------------------------------
+# #34 — Redis auth fail-closed regression tests
+# ---------------------------------------------------------------------------
+#
+# These verify the gateway's `cmd/gateway/main.go::cfg.RedisPassword == ""`
+# hard-fail: an empty or wrong `REDIS_PASSWORD` must abort startup with a
+# non-zero exit code rather than silently connecting to an anonymous Redis.
+#
+# The risk model is operator misconfig — if someone deploys the redis task
+# with `--requirepass ""` AND the gateway with no `REDIS_PASSWORD`, the
+# gateway would happily connect anonymously and never know. Transitive
+# fail-closed via `Ping → NOAUTH` only triggers when redis IS correctly
+# auth-required. The explicit gateway-side check closes the symmetric gap.
+
+
+class TestRedisAuth:
+    """Spawn a fresh gateway container via `docker compose run --rm` with a
+    given REDIS_PASSWORD env, assert the exit-code semantics. Each test
+    runs in its own short-lived container — we never restart the long-lived
+    `gateway` service so other test classes that depend on it stay green.
+
+    Skipped when docker isn't available, when the live gateway image isn't
+    present (haven't built yet), or when COLLECTOR_AUTH_TOKEN isn't set
+    (the gateway boots through the collector-auth check before reaching
+    the Redis-auth one — without the token it'd fail there first and we'd
+    be testing the wrong thing)."""
+
+    @classmethod
+    def setup_class(cls):
+        if shutil.which("docker") is None:
+            pytest.skip("docker CLI not available on the test runner")
+        if not os.getenv("COLLECTOR_AUTH_TOKEN"):
+            pytest.skip(
+                "COLLECTOR_AUTH_TOKEN must be set so the gateway reaches the "
+                "REDIS_PASSWORD check during boot (the collector-auth check "
+                "comes first in main.go)."
+            )
+        # Confirm the gateway image is built. `docker compose run --rm
+        # gateway` with no built image would fail with "no such service".
+        result = subprocess.run(
+            ["docker", "compose", "config", "--services"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if "gateway" not in result.stdout.split():
+            pytest.skip("gateway service not in docker-compose.yaml")
+
+    @staticmethod
+    def _run_gateway_once(redis_password: str) -> tuple[int, str]:
+        """Spawn `docker compose run --rm gateway` with the supplied
+        REDIS_PASSWORD env, capture combined stdout+stderr. Returns
+        (returncode, output). Uses `--no-deps` so we don't restart the
+        long-lived stack (redis is already up; gateway just needs to try
+        connecting and fail). Times out at 15s — gateway either fatals
+        immediately on bad password or boots and we kill it."""
+        # COLLECTOR_AUTH_TOKEN is inherited from the shell so the
+        # collector-auth check passes; only REDIS_PASSWORD differs.
+        cmd = [
+            "docker", "compose", "run",
+            "--rm", "--no-deps",
+            "-e", f"REDIS_PASSWORD={redis_password}",
+            # Override the entrypoint so we don't get caught by depends_on
+            # service_healthy — we just want to run the gateway binary
+            # against the live redis on the same network.
+            "gateway",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=15,
+            # Compose still reads .env for COLLECTOR_AUTH_TOKEN-substitution
+            # checks; the env we pass here just adds REDIS_PASSWORD on top.
+            env={**os.environ},
+        )
+        return result.returncode, (result.stdout or "") + (result.stderr or "")
+
+    def test_gateway_exits_on_empty_redis_password(self):
+        """The explicit `cfg.RedisPassword == ""` check in `main.go` must
+        fire before `rdb.Ping`. Empty env → log.Fatal with a clear message."""
+        rc, out = self._run_gateway_once(redis_password="")
+        assert rc != 0, (
+            f"gateway exited 0 with empty REDIS_PASSWORD — silent anonymous-Redis risk. "
+            f"output={out[:500]!r}"
+        )
+        assert "REDIS_PASSWORD is required" in out, (
+            f"expected 'REDIS_PASSWORD is required' in fatal log; "
+            f"got: {out[:500]!r}"
+        )
+
+    def test_gateway_exits_on_wrong_redis_password(self):
+        """Non-empty but wrong password → `rdb.Ping` returns NOAUTH or
+        WRONGPASS → main's `log.Fatal` exits non-zero. Catches the case
+        where the gateway is configured but disagrees with redis."""
+        rc, out = self._run_gateway_once(redis_password="not-the-real-password")
+        assert rc != 0, (
+            f"gateway exited 0 with wrong REDIS_PASSWORD — auth bypass risk. "
+            f"output={out[:500]!r}"
+        )
+        # Redis 7 returns "WRONGPASS invalid username-password pair" for
+        # mismatched AUTH; older versions say "NOAUTH". Accept either.
+        lower = out.lower()
+        assert (
+            "wrongpass" in lower
+            or "noauth" in lower
+            or "cannot connect to redis" in lower
+        ), (
+            f"expected WRONGPASS / NOAUTH / cannot-connect-to-redis in fatal log; "
+            f"got: {out[:500]!r}"
         )

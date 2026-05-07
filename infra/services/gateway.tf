@@ -35,6 +35,17 @@ resource "aws_ecs_task_definition" "gateway" {
       { name = "DATABASE_URL", value = var.gateway_database_url },
     ]
 
+    # Redis bearer secret. Sourced from Secrets Manager (#34) — this
+    # establishes the pattern #35 will use for `collector_auth_token`
+    # and `clickhouse_password`. Gateway main() hard-fails if
+    # `REDIS_PASSWORD` is empty so an operator misconfig (forgotten env
+    # on the redis task itself) surfaces at boot rather than as a
+    # silent anonymous Redis connection.
+    secrets = [{
+      name      = "REDIS_PASSWORD"
+      valueFrom = aws_secretsmanager_secret.redis_password.arn
+    }]
+
     logConfiguration = {
       logDriver = "awslogs"
       options = {

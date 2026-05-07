@@ -134,6 +134,27 @@ variable "gateway_database_url" {
   default   = ""
 }
 
+variable "redis_password" {
+  description = <<-EOT
+    Bearer secret for the Redis cluster. Required — no default. The gateway
+    + dashboard both refuse to start with an empty value (#34 — fail-closed
+    on the gateway main() and the dashboard's `lib/redis.ts` module load,
+    matching the `lib/clickhouse.ts` pattern from #31).
+
+    Establishes the Secrets Manager pattern that #35 will adopt for
+    `clickhouse_password` and `collector_auth_token`. The terraform
+    resource creates an `aws_secretsmanager_secret` and the redis +
+    gateway task definitions reference it via the ECS `secrets` array, so
+    the value never appears in the task definition `environment` block
+    (no leak via `ecs:DescribeTaskDefinition`).
+
+    Generate with `openssl rand -hex 32`. Use a URL-safe value if you also
+    embed it in the dashboard's `REDIS_URL` (alphanumeric + `_-` is fine).
+  EOT
+  type      = string
+  sensitive = true
+}
+
 variable "domain_name" {
   description = "Domain name for the gateway (e.g. ingest.ward.dev). Leave empty to skip DNS."
   type        = string

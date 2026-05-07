@@ -165,11 +165,14 @@ The local Compose file ships with deliberately weak defaults (`otelpass`, `postg
 
 | Variable | Notes |
 |---|---|
-| `COLLECTOR_AUTH_TOKEN` | **Already required.** Both gateway and collector refuse to start without it. Generate fresh: `openssl rand -hex 32`. |
+| `COLLECTOR_AUTH_TOKEN` | **Required, no default.** Both gateway and collector refuse to start without it. Generate fresh: `openssl rand -hex 32`. |
+| `REDIS_PASSWORD` | **Required for prod.** The redis service runs with `--requirepass $REDIS_PASSWORD`; the gateway (`cmd/gateway/main.go`) and the dashboard (`lib/redis.ts`) BOTH hard-fail at boot if empty so an operator misconfig (e.g. forgotten password on the redis task itself) can't silently downgrade the stack to anonymous Redis. Generate fresh: `openssl rand -hex 32`. Use a url-safe value (alphanumeric + `_-`) if you embed it in a custom `REDIS_URL`. |
 | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | The dashboard's `lib/clickhouse.ts` hard-fails at module load if either is missing — no compiled-in fallback. |
 | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | Match the values referenced by `DATABASE_URL` below. |
 | `DATABASE_URL` | Either a DSN that points at the in-stack `postgres` service or an external Postgres (Supabase, RDS). The dashboard's Prisma client and the gateway's API-key hydrate (#26) both read this. |
 | `GF_SECURITY_ADMIN_USER`, `GF_SECURITY_ADMIN_PASSWORD` | The default `admin/admin` would be an obvious initial-foothold gift to anyone scanning :3000 in any deploy that exposes it. |
+
+**Dashboard infra coupling.** The dashboard's runtime (Vercel / Render / etc.) is not in the `infra/*.tf` Terraform — those manifests cover gateway, collector, redis, and clickhouse only. Set `REDIS_PASSWORD` (and the other variables above) in whatever runtime hosts the dashboard, with the same value as the rest of the stack. Treat it like `NEXT_PUBLIC_SUPABASE_URL`: an operator obligation, surfaced via the dashboard's hard-fail on missing env.
 
 ### Suggested invocation
 
@@ -179,9 +182,9 @@ Keep production secrets in a separate file (e.g. `.env.production`, gitignored o
 docker compose --env-file .env.production up -d
 ```
 
-Compose's `${VAR:-default}` syntax keeps the defaults active when the override is empty, so a partially-populated env file silently uses dev creds for anything you forgot. **For prod, ensure every variable in the table above is present in `.env.production`** — the smoke test is `docker compose config --env-file .env.production` and grepping for any of `otelpass`, `postgres`, `admin` in the rendered output.
+Compose's `${VAR:-default}` syntax keeps the defaults active when the override is empty, so a partially-populated env file silently uses dev creds for anything you forgot. **For prod, ensure every variable in the table above is present in `.env.production`** — the smoke test is `docker compose config --env-file .env.production` and grepping for any of `otelpass`, `postgres`, `admin`, `devredispass` in the rendered output.
 
-V1.1 (#34, #35) will move the credential plumbing through AWS Secrets Manager / ECS `secrets` arrays so nothing rides on the env-file pattern in the cloud deploy. Until then, `--env-file` is the supported path.
+V1.1 progress: #34 (Redis auth via Secrets Manager) and #35 (ClickHouse password migration) move the credential plumbing through AWS Secrets Manager / ECS `secrets` arrays so nothing rides on the env-file pattern in the cloud deploy for the migrated services. The Redis password is already on this path (`infra/services/redis.tf::aws_secretsmanager_secret`); the rest follow under #35. Until then, `--env-file` is the supported path for the un-migrated services.
 
 ## Configuration
 

@@ -7,9 +7,20 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    # #34 — Redis runs with --requirepass; gateway + dashboard hard-fail
+    # at startup if REDIS_PASSWORD is empty so a misconfigured stack
+    # can't silently fall back to anonymous Redis. The sh -c wrapper is
+    # needed because Redis's --requirepass takes an arg (not env), and
+    # the env var lets ECS' `secrets` array inject the value uniformly
+    # across the prod task definition (see infra/services/redis.tf).
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-devredispass}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "sh", "-c", "redis-cli -a \"$$REDIS_PASSWORD\" ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -29,6 +40,10 @@ services:
       # Required — gateway refuses to start with an empty value (#25, F2/F3).
       - COLLECTOR_AUTH_TOKEN=${COLLECTOR_AUTH_TOKEN:?COLLECTOR_AUTH_TOKEN must be set in .env (run `openssl rand -hex 32`)}
       - REDIS_ADDR=redis:6379
+      # #34 — gateway hard-fails if empty so an operator misconfig (forgotten
+      # password on the redis service itself) can't downgrade the gateway to
+      # an anonymous connection. Must match the redis service's value.
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-devredispass}
       # Optional. When set, the gateway runs an API-key hydrate pass at
       # startup against Postgres (#26) — Redis flushes / stale-snapshot
       # restores / dashboard partial-failure residue all converge before
@@ -153,7 +168,12 @@ services:
       - CLICKHOUSE_URL=http://clickhouse:8123
       - CLICKHOUSE_USER=${CLICKHOUSE_USER:-otel}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-otelpass}
+      # #34 — dashboard's `lib/redis.ts` hard-fails if REDIS_PASSWORD is empty
+      # (mirrors `lib/clickhouse.ts:requireEnv()` from #31). The plain
+      # `REDIS_URL` keeps the host/port; the password is passed via the
+      # ioredis `password:` option so url-encoding edge-cases don't bite.
       - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-devredispass}
     depends_on:
       postgres:
         condition: service_healthy
