@@ -91,6 +91,15 @@ stopwords = [
   # secrets.
   "not-the-real-token-xxxxxxxxxxxx",
   "replace_me_with_openssl_rand_hex_32",
+  # CI-only deterministic seed fixtures (#27 — `--key` flag in
+  # `gateway/cmd/seed`). Used by `.github/workflows/tenant-isolation.yml`
+  # to seed two test tenants with stable plaintext keys instead of parsing
+  # stdout. Wiped by `docker compose down -v` at job teardown; never
+  # touch real Redis/Postgres outside CI.
+  "ak_live_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "ak_live_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "ak_live_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "ak_live_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
 ]
 
 # Per-regex allowlist: literal test placeholders in src/tests/ and scripts/

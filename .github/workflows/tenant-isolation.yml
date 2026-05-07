@@ -126,24 +126,26 @@ jobs:
         id: seed
         working-directory: gateway
         env:
-          # `go run` doesn't need this, but keeping it explicit for clarity:
-          # seed talks to Redis only, not the collector.
+          # seed talks to Redis directly + opens its own Postgres connection
+          # for the dual-write (#27). DATABASE_URL maps to the host port the
+          # postgres compose service exposes (5434:5432).
           REDIS_ADDR: localhost:6379
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5434/ward
         run: |
           set -euo pipefail
-          # The seed binary reads REDIS_ADDR from env. It generates a fresh
-          # random key on each invocation (#27 backlog: idempotent reuse).
-          OUT_A="$(go run ./cmd/seed --tenant ci-tenant-A)"
-          OUT_B="$(go run ./cmd/seed --tenant ci-tenant-B)"
-          KEY_A="$(echo "$OUT_A" | awk '/^  Key:/ {print $2}')"
-          KEY_B="$(echo "$OUT_B" | awk '/^  Key:/ {print $2}')"
-          if [[ -z "$KEY_A" || -z "$KEY_B" ]]; then
-            echo "::error::failed to extract one or both seeded keys"; exit 1
-          fi
-          # Mask the keys in subsequent log lines.
+          # #27: --key takes a deterministic plaintext so we don't have to
+          # parse stdout. Keys are CI-only and cleaned up by `docker compose
+          # down -v` at job teardown. The values look like real keys but are
+          # ephemeral fixtures — gitleaks rule `ward-api-key` would flag any
+          # such literal in source, hence stopword-allowlisted only here.
+          KEY_A="ak_live_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          KEY_B="ak_live_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          go run ./cmd/seed --tenant ci-tenant-A --key "$KEY_A"
+          go run ./cmd/seed --tenant ci-tenant-B --key "$KEY_B"
+          # Mask the keys in subsequent log lines (defense in depth even
+          # though they're well-known fixtures — keeps the habit).
           echo "::add-mask::$KEY_A"
           echo "::add-mask::$KEY_B"
-          # Surface to later steps without exposing the values in plain text.
           {
             echo "key_a=$KEY_A"
             echo "key_b=$KEY_B"

@@ -24,14 +24,22 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DASHBOARD_DIR="$( cd "${SCRIPT_DIR}/.." && pwd )"
 cd "${DASHBOARD_DIR}"
 
-# Discover every *-tenant-isolation.ts file under __tests__/. Sort for stable
-# CI output. New scripts following the naming convention are picked up
-# automatically. Avoid `mapfile` (bash 4+) so this works on macOS's bundled
-# bash 3.2 too.
-TESTS_LIST="$(find __tests__ -maxdepth 1 -name '*-tenant-isolation.ts' -type f | sort)"
+# Discover every safety-regression tsx script under __tests__/. Two name
+# patterns both pick up:
+#
+#   *-tenant-isolation.ts — cross-tenant leak / `requireTenantId()` checks.
+#   *-format-guard.ts     — format-drift guards keeping the dashboard,
+#                           gateway, and gitleaks regex in lockstep (#27).
+#
+# Sort for stable CI output. New scripts following either naming convention
+# are picked up automatically. Avoid `mapfile` (bash 4+) so this works on
+# macOS's bundled bash 3.2 too.
+TESTS_LIST="$(find __tests__ -maxdepth 1 \
+    \( -name '*-tenant-isolation.ts' -o -name '*-format-guard.ts' \) \
+    -type f | sort)"
 
 if [[ -z "${TESTS_LIST}" ]]; then
-  echo "[run-tenant-isolation-tests] no *-tenant-isolation.ts files found under __tests__/" >&2
+  echo "[run-tenant-isolation-tests] no *-tenant-isolation.ts or *-format-guard.ts files found under __tests__/" >&2
   exit 1
 fi
 
