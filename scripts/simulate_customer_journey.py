@@ -39,7 +39,7 @@ ward.init(
     application_name="customer-journey-simulation",
     environment="production-demo",
     otlp_endpoint="http://localhost:8080",
-    otlp_headers={"Authorization": "Bearer ak_live_be098ecd94b91e6722c3d36452a5da96"},
+    otlp_headers={"Authorization": f"Bearer {get_key(find_dotenv(), 'WARD_API_KEY')}"},
     capture_message_content=True,
 )
 

@@ -158,8 +158,12 @@ generate_api_key() {
     else
         echo -e "${RED}❌ Failed to generate API key${NC}"
         echo "Output: $KEY_OUTPUT"
-        API_KEY="ak_live_be098ecd94b91e6722c3d36452a5da96"  # Fallback key from existing test
-        echo -e "${YELLOW}   Using fallback API key: ${API_KEY}${NC}"
+        API_KEY="${WARD_API_KEY:-}"
+        if [ -z "$API_KEY" ]; then
+            echo -e "${RED}❌ Seed tool failed and WARD_API_KEY env var is not set. Aborting.${NC}"
+            exit 1
+        fi
+        echo -e "${YELLOW}   Using WARD_API_KEY from env: ${API_KEY:0:11}...${NC}"
     fi
 }
 
@@ -206,33 +210,21 @@ EOF
         echo -e "${GREEN}✅ Created .env file${NC}"
     fi
 
-    # Update test scripts with the generated API key
-    if [ -n "$API_KEY" ]; then
-        echo -e "${YELLOW}   Updating test scripts with API key...${NC}"
-
-        # Update existing test files
-        for file in test_*.py generate_*.py verify_*.py; do
-            if [ -f "$file" ]; then
-                sed -i.bak "s/ak_live_be098ecd94b91e6722c3d36452a5da96/${API_KEY}/g" "$file" 2>/dev/null || true
-            fi
-        done
-
-        echo -e "${GREEN}✅ Test scripts updated${NC}"
-    fi
+    # Test scripts read WARD_API_KEY from .env at runtime — no in-place substitution needed.
 }
 
 run_sample_tests() {
     echo -e "${BLUE}🧪 Generating sample test data...${NC}"
 
     echo -e "${YELLOW}   Running comprehensive workflow tests...${NC}"
-    if python3 test_comprehensive_workflows.py 2>/dev/null; then
+    if python3 scripts/test_comprehensive_workflows.py 2>/dev/null; then
         echo -e "${GREEN}✅ Workflow tests completed${NC}"
     else
         echo -e "${YELLOW}⚠️  Workflow tests had issues (API keys may need configuration)${NC}"
     fi
 
     echo -e "${YELLOW}   Running metrics verification...${NC}"
-    if python3 verify_metrics.py --test-session 2>/dev/null; then
+    if python3 scripts/verify_metrics.py --test-session 2>/dev/null; then
         echo -e "${GREEN}✅ Metrics verification completed${NC}"
     else
         echo -e "${YELLOW}⚠️  Metrics verification had issues${NC}"
@@ -282,10 +274,10 @@ print_usage_guide() {
     echo ""
 
     echo -e "${CYAN}🧪 Test Scripts:${NC}"
-    echo "   • Comprehensive tests:     python3 test_comprehensive_workflows.py"
-    echo "   • Generate bulk data:      python3 generate_test_data.py --sessions 50"
-    echo "   • Verify metrics:          python3 verify_metrics.py --test-session"
-    echo "   • Load testing:           python3 generate_test_data.py --load-test"
+    echo "   • Comprehensive tests:     python3 scripts/test_comprehensive_workflows.py"
+    echo "   • Generate bulk data:      python3 scripts/generate_test_data.py --sessions 50"
+    echo "   • Verify metrics:          python3 scripts/verify_metrics.py --test-session"
+    echo "   • Load testing:           python3 scripts/generate_test_data.py --load-test"
     echo ""
 
     echo -e "${CYAN}🔍 What to Explore in the Dashboard:${NC}"

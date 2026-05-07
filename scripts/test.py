@@ -1,16 +1,19 @@
+import os
 import ward
 from openai import OpenAI
-from dotenv import get_key, find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
 load_dotenv()
+
+ward_api_key = os.environ["WARD_API_KEY"]
 
 ward.init(
       application_name="my-app",
       otlp_endpoint="http://localhost:8080",
-      otlp_headers={"Authorization": "Bearer ak_live_be098ecd94b91e6722c3d36452a5da96"},
+      otlp_headers={"Authorization": f"Bearer {ward_api_key}"},
 )
 
-client = OpenAI(api_key=get_key(find_dotenv(), "OPENAI_API_KEY"))
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "hello world!"}],

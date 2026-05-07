@@ -8,7 +8,7 @@ load_dotenv()
 ward.init(
     application_name="session-test-app",
     otlp_endpoint="http://localhost:8080",
-    otlp_headers={"Authorization": "Bearer ak_live_be098ecd94b91e6722c3d36452a5da96"},
+    otlp_headers={"Authorization": f"Bearer {get_key(find_dotenv(), 'WARD_API_KEY')}"},
 )
 
 client = OpenAI(api_key=get_key(find_dotenv(), "OPENAI_API_KEY"))
