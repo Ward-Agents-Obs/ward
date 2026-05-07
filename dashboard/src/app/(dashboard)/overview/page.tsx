@@ -188,6 +188,38 @@ export default async function OverviewPage({
     .filter((row) => row.model)
     .slice(0, 5);
 
+  /**
+   * KPI prev-window deltas. All NULL for V1.0 because backend's #39 (B12)
+   * hasn't landed the parameterised + delta query yet. The MetricCard
+   * component already supports `delta` + `goodDirection` (wired in F1
+   * anticipating this), so the swap-in is body-only on this file.
+   *
+   * TODO(#39-backend): when #39 lands, replace the four `null` initialisers
+   * below with values from a `getOverviewMetricsDelta(tenantId, range)` (or
+   * equivalent) call returning signed percentages — positive = up vs prev
+   * window, negative = down. Then drop the `caption="last 24h"` props on
+   * the four MetricCards below so the delta arrow + range carry the
+   * meaning instead.
+   *
+   * `goodDirection` is already set per metric below: `up` for total spans
+   * (more traffic = healthier); `down` for total cost / avg latency /
+   * error rate (less spend, faster, fewer failures = better). Setting it
+   * upfront has no visual effect today (MetricCard only colours the arrow
+   * when a delta exists) and means landing the deltas needs zero further
+   * direction tweaks.
+   */
+  const deltas: {
+    totalSpans: number | null;
+    totalCost: number | null;
+    avgLatency: number | null;
+    errorRate: number | null;
+  } = {
+    totalSpans: null,
+    totalCost: null,
+    avgLatency: null,
+    errorRate: null,
+  };
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 lg:px-10 lg:py-10">
       {/* Header */}
@@ -232,24 +264,30 @@ export default async function OverviewPage({
           value={formatNumber(metrics.totalSpans)}
           icon={Activity}
           caption="last 24h"
+          delta={deltas.totalSpans ?? undefined}
         />
         <MetricCard
           title="Total cost"
           value={formatCost(metrics.totalCost)}
           icon={DollarSign}
           caption="last 24h"
+          delta={deltas.totalCost ?? undefined}
+          goodDirection="down"
         />
         <MetricCard
           title="Avg latency"
           value={formatLatency(metrics.avgLatencyMs)}
           icon={Clock}
           caption="last 24h"
+          delta={deltas.avgLatency ?? undefined}
+          goodDirection="down"
         />
         <MetricCard
           title="Error rate"
           value={`${errorPct.toFixed(2)}%`}
           icon={AlertTriangle}
           caption={RANGE_LABEL[range]}
+          delta={deltas.errorRate ?? undefined}
           goodDirection="down"
         />
       </section>
