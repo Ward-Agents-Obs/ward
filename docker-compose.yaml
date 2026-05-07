@@ -25,6 +25,9 @@ services:
     environment:
       - GATEWAY_PORT=8080
       - COLLECTOR_ADDR=http://otel-collector:4318
+      # Shared secret with the otel-collector's bearertokenauth extension.
+      # Required — gateway refuses to start with an empty value (#25, F2/F3).
+      - COLLECTOR_AUTH_TOKEN=${COLLECTOR_AUTH_TOKEN:?COLLECTOR_AUTH_TOKEN must be set in .env (run `openssl rand -hex 32`)}
       - REDIS_ADDR=redis:6379
       - DEFAULT_RATE_LIMIT=10000
     depends_on:
@@ -79,6 +82,9 @@ services:
       - CLICKHOUSE_DATABASE=default
       - CLICKHOUSE_USERNAME=otel
       - CLICKHOUSE_PASSWORD=otelpass
+      # Must match the gateway's COLLECTOR_AUTH_TOKEN. The bearertokenauth
+      # extension verifies inbound OTLP requests against this value.
+      - COLLECTOR_AUTH_TOKEN=${COLLECTOR_AUTH_TOKEN:?COLLECTOR_AUTH_TOKEN must be set in .env (run `openssl rand -hex 32`)}
     depends_on:
       clickhouse:
         condition: service_started

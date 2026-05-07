@@ -20,15 +20,26 @@ import (
 type Proxy struct {
 	client       *http.Client
 	collectorURL string
+	// authToken is the shared secret the gateway presents to the collector
+	// via `Authorization: Bearer <token>`. Defense-in-depth so that even if
+	// the collector socket leaks onto a network beyond the gateway, only
+	// gateway-issued payloads are accepted. Required (gateway main.go
+	// fails-fast on an empty token); enforced collector-side by the
+	// `bearertokenauth` extension in configs/otel-collector-config.yaml.
+	authToken string
 }
 
-// New builds a proxy that forwards trace exports to the collector's /v1/traces endpoint.
-func New(collectorAddr string) *Proxy {
+// New builds a proxy that forwards trace exports to the collector's /v1/traces
+// endpoint, presenting `authToken` as a Bearer credential to the collector's
+// bearertokenauth extension. Pass an empty token only in tests where the
+// collector also has no auth configured.
+func New(collectorAddr, authToken string) *Proxy {
 	return &Proxy{
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 		collectorURL: strings.TrimRight(collectorAddr, "/") + "/v1/traces",
+		authToken:    authToken,
 	}
 }
 
@@ -59,7 +70,14 @@ func (p *Proxy) HandleTraces(w http.ResponseWriter, r *http.Request) {
 	}
 
 	copyHeaders(req.Header, r.Header)
+	// Strip the SDK client's Authorization header (which carried the API key)
+	// and replace with our internal collector-auth token. The collector's
+	// bearertokenauth extension verifies this on the receiver side; without
+	// it, any traffic that reaches the collector socket is rejected.
 	req.Header.Del("Authorization")
+	if p.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+p.authToken)
+	}
 	req.Header.Del("Content-Length")
 
 	resp, err := p.client.Do(req)

@@ -56,6 +56,9 @@ paths = [
   '''(^|/)node_modules(/|$)''',
   '''(^|/)venv(/|$)''',
   '''(^|/)\.git(/|$)''',
+  # Python bytecode caches — gitignored anyway, but exclude for `--no-git`
+  # local scans to keep the signal-to-noise ratio of dev runs high.
+  '''(^|/)__pycache__(/|$)''',
   # Lockfiles often contain hash-shaped strings that the JWT/generic detectors
   # false-positive on. Lockfiles can't carry useful secrets anyway.
   '''(^|/)package-lock\.json$''',
@@ -83,6 +86,11 @@ stopwords = [
   "ak_live_invalid_key_000000000000",
   "<your-api-key>",
   "<your-ward-api-key>",
+  # Test fixtures for negative auth cases (TestCollectorAuth, #25). These
+  # literals are intentionally wrong to drive a 401 in tests; they're not
+  # secrets.
+  "not-the-real-token-xxxxxxxxxxxx",
+  "replace_me_with_openssl_rand_hex_32",
 ]
 
 # Per-regex allowlist: literal test placeholders in src/tests/ and scripts/

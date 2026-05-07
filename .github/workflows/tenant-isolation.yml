@@ -1,20 +1,25 @@
 name: tenant-isolation
 
 # Regression test for tenant isolation across the SDK → gateway → ClickHouse →
-# dashboard chain. See `.agents/tenant-isolation-audit.md` for the full audit
-# this is regression-protecting; B6 (#9) for the testing brief.
+# dashboard chain, plus the collector-auth defense-in-depth gate. See
+# `.agents/tenant-isolation-audit.md` for the audit this is regression-
+# protecting; B6 (#9) and #25 for the testing briefs.
 #
 # The job:
-#   1. Brings up docker-compose (clickhouse, redis, gateway, otel-collector).
-#   2. Seeds two tenants via `gateway/cmd/seed`.
-#   3. Runs every `*-tenant-isolation.ts` script under `dashboard/__tests__/`
-#      against the live ClickHouse.
-#   4. Runs `TestTenantIsolation` in `src/tests/test_gateway_integration.py`
-#      against the live gateway, exercising the spoof-resistance path.
+#   1. Generates a fresh COLLECTOR_AUTH_TOKEN per CI run (random hex-32).
+#   2. Brings up docker-compose (clickhouse, redis, gateway, otel-collector)
+#      with the token wired into both the gateway and otel-collector envs.
+#   3. Seeds two tenants via `gateway/cmd/seed`.
+#   4. Runs every `*-tenant-isolation.ts` script under `dashboard/__tests__/`
+#      against the live ClickHouse (data-plane scoping).
+#   5. Runs `TestTenantIsolation` against the live gateway (gateway-side
+#      spoof resistance).
+#   6. Runs `TestCollectorAuth` against the collector socket (defense-in-
+#      depth bearertokenauth gate).
 #
-# Triggered on PRs and push-to-main only — not on a schedule, since the data
-# layer never changes drift-style and a regression here is always something
-# a code change introduced.
+# Triggered on PRs and push-to-main only — not on a schedule, since the
+# data/auth layer never changes drift-style and a regression here is always
+# something a code change introduced.
 
 on:
   pull_request:
@@ -64,7 +69,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest requests opentelemetry-proto
 
+      - name: Generate collector auth token
+        id: token
+        run: |
+          # Fresh per-run token. Both the gateway and the otel-collector read
+          # this from COLLECTOR_AUTH_TOKEN; the gateway refuses to start if
+          # empty (#25). Mask it so it never leaks into logs.
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
       - name: Bring up docker-compose stack
+        env:
+          COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
         run: |
           # Provide harmless dummy Supabase env so the dashboard container
           # build doesn't fail. The dashboard service is unused by these tests
@@ -89,12 +106,16 @@ jobs:
       - name: Seed two tenants via gateway/cmd/seed
         id: seed
         working-directory: gateway
+        env:
+          # `go run` doesn't need this, but keeping it explicit for clarity:
+          # seed talks to Redis only, not the collector.
+          REDIS_ADDR: localhost:6379
         run: |
           set -euo pipefail
           # The seed binary reads REDIS_ADDR from env. It generates a fresh
           # random key on each invocation (#27 backlog: idempotent reuse).
-          OUT_A="$(REDIS_ADDR=localhost:6379 go run ./cmd/seed --tenant ci-tenant-A)"
-          OUT_B="$(REDIS_ADDR=localhost:6379 go run ./cmd/seed --tenant ci-tenant-B)"
+          OUT_A="$(go run ./cmd/seed --tenant ci-tenant-A)"
+          OUT_B="$(go run ./cmd/seed --tenant ci-tenant-B)"
           KEY_A="$(echo "$OUT_A" | awk '/^  Key:/ {print $2}')"
           KEY_B="$(echo "$OUT_B" | awk '/^  Key:/ {print $2}')"
           if [[ -z "$KEY_A" || -z "$KEY_B" ]]; then
@@ -134,8 +155,22 @@ jobs:
             src/tests/test_gateway_integration.py::TestTenantIsolation \
             -v --tb=short
 
+      - name: Run collector-auth defense-in-depth tests
+        env:
+          # TestCollectorAuth probes the collector's bearertokenauth extension
+          # from inside the ward-network via an ephemeral curl container.
+          # Needs the same token the live gateway/collector are using.
+          COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
+        run: |
+          python -m pytest \
+            src/tests/test_gateway_integration.py::TestCollectorAuth \
+            -v --tb=short
+
       - name: Dump container logs on failure
         if: failure()
+        env:
+          # Compose substitution requires the token even for `logs`.
+          COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
         run: |
           echo "=== gateway ===";        docker compose logs gateway || true
           echo "=== otel-collector ==="; docker compose logs otel-collector || true
@@ -144,4 +179,6 @@ jobs:
 
       - name: Tear down docker-compose
         if: always()
+        env:
+          COLLECTOR_AUTH_TOKEN: ${{ steps.token.outputs.value }}
         run: docker compose down -v

@@ -45,9 +45,14 @@ CLICKHOUSE_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "otelpass")
 
 @pytest.fixture(autouse=True)
 def require_api_key(request):
-    # Tests under TestTenantIsolation manage their own skip semantics — the
-    # spoof harness needs *both* keys plus tenant ids to be set.
-    if request.cls is not None and request.cls.__name__ == "TestTenantIsolation":
+    # Test classes that manage their own skip semantics opt out of the
+    # default API-key requirement here. TestTenantIsolation needs *both*
+    # tenants seeded; TestCollectorAuth needs COLLECTOR_AUTH_TOKEN and
+    # docker-network access — see each class's setup_class for specifics.
+    if request.cls is not None and request.cls.__name__ in {
+        "TestTenantIsolation",
+        "TestCollectorAuth",
+    }:
         return
     if not API_KEY:
         pytest.skip("WARD_TEST_API_KEY not set — run seed first")
@@ -493,4 +498,140 @@ class TestTenantIsolation:
             f"CROSS-LEAK: orgA's payload (forged ward.tenant_id={TENANT_ID_B}) "
             f"surfaced in orgB's tenant-scoped view. The dashboard would show "
             f"orgA's data to orgB."
+        )
+
+
+# ---------------------------------------------------------------------------
+# #25 — Collector authentication regression tests
+# ---------------------------------------------------------------------------
+#
+# These verify the collector-side `bearertokenauth` extension rejects OTLP
+# traffic that doesn't present the gateway's shared secret. Defense-in-depth
+# behind the gateway/collector network boundary — see
+# `.agents/tenant-isolation-audit.md` finding F2/F3 and task #25.
+#
+# The collector socket is `expose:`-only (not host-bound) by design, so we
+# probe it from inside the docker network via `docker compose run --rm` an
+# ephemeral curl container. The curl container joins the same compose network
+# (`ward-network`) and resolves `otel-collector` via service DNS.
+
+import shutil
+import subprocess
+
+
+COLLECTOR_AUTH_TOKEN = os.getenv("COLLECTOR_AUTH_TOKEN", "")
+
+
+def _curl_collector(args: list[str]) -> tuple[int, str, str]:
+    """Run a curl invocation against the collector via an ephemeral docker
+    container on the ward network. Returns (returncode, stdout, stderr).
+
+    The curl container is `curlimages/curl` (small, no shell, just curl).
+    Joining the existing compose network — see `networks.default.name` in
+    docker-compose.yaml — gives us DNS for `otel-collector`."""
+    cmd = [
+        "docker", "run", "--rm",
+        "--network", "ward-network",
+        "curlimages/curl:latest",
+        *args,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    return result.returncode, result.stdout, result.stderr
+
+
+class TestCollectorAuth:
+    """Defense-in-depth on the collector's OTLP receiver. The gateway is the
+    only legitimate client; this class proves that any other client (or a
+    misconfigured gateway with a bad token) is rejected with 401 before the
+    OTLP pipeline runs."""
+
+    @classmethod
+    def setup_class(cls):
+        if not COLLECTOR_AUTH_TOKEN:
+            pytest.skip(
+                "TestCollectorAuth requires COLLECTOR_AUTH_TOKEN set in the env "
+                "(must match the value passed to the running gateway + collector)"
+            )
+        if shutil.which("docker") is None:
+            pytest.skip("docker CLI not available on the test runner")
+        # Verify the ward-network exists — otherwise the curl container can't
+        # reach the collector. Skip with a clear message rather than fail.
+        result = subprocess.run(
+            ["docker", "network", "inspect", "ward-network"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            pytest.skip(
+                "ward-network not found — bring up docker-compose first "
+                "(`docker compose up -d gateway otel-collector`)"
+            )
+
+    def _post(self, *, auth_header: str | None) -> tuple[int, str, str]:
+        """POST a minimal protobuf OTLP body to the collector. Returns
+        (http_status, stdout, stderr) where stdout is the response body."""
+        args = [
+            "--silent", "--show-error",
+            "--output", "/dev/null",
+            "--write-out", "%{http_code}",
+            "-X", "POST",
+            "http://otel-collector:4318/v1/traces",
+            "-H", "Content-Type: application/x-protobuf",
+            # Empty body — the auth check runs before payload parsing, so the
+            # status code is determined entirely by the Authorization header.
+            "--data-binary", "",
+        ]
+        if auth_header is not None:
+            args.extend(["-H", f"Authorization: {auth_header}"])
+        rc, stdout, stderr = _curl_collector(args)
+        # `%{http_code}` writes to stdout; with --silent, that's the only
+        # thing on stdout (the body went to /dev/null).
+        try:
+            status = int(stdout.strip())
+        except ValueError:
+            pytest.fail(f"could not parse curl status from stdout={stdout!r} stderr={stderr!r} rc={rc}")
+        return status, stdout, stderr
+
+    def test_no_auth_returns_401(self):
+        """Direct OTLP POST with no Authorization header → 401. Without
+        bearertokenauth, this would be a 400 (bad payload) or 200 (silent
+        accept) — both are tenant-isolation hazards."""
+        status, _, stderr = self._post(auth_header=None)
+        assert status == 401, (
+            f"expected 401 (auth required), got {status}. "
+            f"This would mean ANY in-network client can publish OTLP traces. "
+            f"stderr={stderr!r}"
+        )
+
+    def test_wrong_bearer_returns_401(self):
+        status, _, stderr = self._post(
+            auth_header="Bearer not-the-real-token-xxxxxxxxxxxx",
+        )
+        assert status == 401, (
+            f"expected 401 for wrong bearer, got {status}. "
+            f"bearertokenauth must reject mismatched tokens. stderr={stderr!r}"
+        )
+
+    def test_malformed_authorization_header_returns_401(self):
+        """Missing 'Bearer ' prefix — the extension is configured with
+        scheme=Bearer, so a bare token shouldn't authenticate."""
+        status, _, stderr = self._post(
+            auth_header=COLLECTOR_AUTH_TOKEN,  # no "Bearer " prefix
+        )
+        assert status == 401, (
+            f"expected 401 for missing Bearer scheme, got {status}. "
+            f"stderr={stderr!r}"
+        )
+
+    def test_correct_bearer_passes_auth(self):
+        """With the matching token the auth check passes. The empty body
+        means the OTLP receiver may return 200 (PartialSuccess) or 400 (bad
+        protobuf) — what matters is that it is NOT 401."""
+        status, _, stderr = self._post(
+            auth_header=f"Bearer {COLLECTOR_AUTH_TOKEN}",
+        )
+        assert status != 401, (
+            f"expected non-401 for correct token, got {status}. "
+            f"This would mean the gateway's own outbound token doesn't match "
+            f"the collector's configured token — probably a deploy mismatch. "
+            f"stderr={stderr!r}"
         )

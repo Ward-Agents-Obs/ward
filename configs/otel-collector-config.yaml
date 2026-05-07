@@ -1,10 +1,25 @@
+# Defense-in-depth on the OTLP receiver socket: the gateway is the only
+# expected client, but if the collector port ever leaks beyond the gateway's
+# private network the bearertokenauth extension still rejects the traffic.
+# The token is shared with `gateway/internal/proxy/proxy.go` via the
+# COLLECTOR_AUTH_TOKEN environment variable. Both sides fail closed if it's
+# unset (the extension errors at startup; the gateway main() refuses to boot).
+extensions:
+  bearertokenauth:
+    scheme: Bearer
+    token: ${env:COLLECTOR_AUTH_TOKEN}
+
 receivers:
   otlp:
     protocols:
       grpc:
         endpoint: 0.0.0.0:4317
+        auth:
+          authenticator: bearertokenauth
       http:
         endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth
 
 processors:
   batch:
@@ -50,6 +65,7 @@ exporters:
   #     insecure: true
 
 service:
+  extensions: [bearertokenauth]
   pipelines:
     logs:
       receivers: [otlp]

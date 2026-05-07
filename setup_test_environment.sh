@@ -67,6 +67,22 @@ check_dependencies() {
     echo -e "${GREEN}✅ Dependencies check passed${NC}"
 }
 
+ensure_collector_auth_token() {
+    # The gateway and otel-collector both refuse to start without
+    # COLLECTOR_AUTH_TOKEN. In production the operator MUST set it explicitly
+    # (it's the second line of defense behind the gateway/collector network
+    # boundary — see #25 / `.agents/tenant-isolation-audit.md`). For local dev
+    # convenience we generate one if it's not already set.
+    if [ -z "${COLLECTOR_AUTH_TOKEN:-}" ]; then
+        export COLLECTOR_AUTH_TOKEN="$(openssl rand -hex 32)"
+        echo -e "${YELLOW}🔐 COLLECTOR_AUTH_TOKEN was unset — generated a fresh dev token.${NC}"
+        echo -e "${YELLOW}   This is DEV ONLY. Production deploys MUST set this explicitly${NC}"
+        echo -e "${YELLOW}   in the gateway and otel-collector environments.${NC}"
+    else
+        echo -e "${GREEN}🔐 COLLECTOR_AUTH_TOKEN already set — using existing value.${NC}"
+    fi
+}
+
 start_services() {
     echo -e "${BLUE}🐳 Starting Ward services...${NC}"
 
@@ -372,6 +388,7 @@ main() {
 
     # Run setup steps
     check_dependencies
+    ensure_collector_auth_token
     start_services
     generate_api_key
     install_python_dependencies

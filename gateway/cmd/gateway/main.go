@@ -26,6 +26,18 @@ func main() {
 	zerolog.TimeFieldFormat = time.RFC3339Nano
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 
+	// Fail closed: refuse to start without the shared collector-auth token.
+	// A silent regression to no auth is the worst possible failure mode for
+	// this defense-in-depth control. See `.agents/tenant-isolation-audit.md`
+	// finding F2 / F3 and task #25.
+	if cfg.CollectorAuthToken == "" {
+		log.Fatal().Msg(
+			"COLLECTOR_AUTH_TOKEN is required; refusing to start. " +
+				"Generate via `openssl rand -hex 32` and set in the gateway's environment " +
+				"AND the otel-collector's environment (must match).",
+		)
+	}
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,
@@ -41,7 +53,7 @@ func main() {
 	}
 
 	limiter := ratelimit.NewLimiter(rdb)
-	traceProxy := proxy.New(cfg.CollectorAddr)
+	traceProxy := proxy.New(cfg.CollectorAddr, cfg.CollectorAuthToken)
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestLogger())
