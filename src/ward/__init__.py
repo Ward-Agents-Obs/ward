@@ -46,11 +46,28 @@ def init(
         environment: Deployment environment (e.g. "production", "staging").
         otlp_endpoint: OTLP collector base URL (e.g. "http://localhost:4318").
                        The SDK appends /v1/traces automatically.
+
+                       Security: this is the egress destination for every span
+                       this SDK produces, including prompt/completion content
+                       when `capture_message_content=True`. The SDK does not
+                       validate the endpoint, verify TLS pinning, or enforce
+                       a scheme. Callers are responsible for:
+                         - using https:// in production (the SDK will not
+                           reject http:// URLs)
+                         - confirming the host is one you control (the URL
+                           is treated as trusted)
+                         - rotating any `Authorization`/`Bearer` value passed
+                           via `otlp_headers` if the endpoint is ever changed
         otlp_headers: Optional headers dict for authenticated OTLP endpoints.
+                      Treat any value here as a credential: do not log,
+                      commit, or interpolate from untrusted sources.
         instrumentations: List of providers to instrument. Defaults to ["openai"].
                          Available: "openai", "anthropic".
         disable_batch: Use SimpleSpanProcessor instead of BatchSpanProcessor.
         capture_message_content: Whether to capture prompt/response content in spans.
+                                 Default True. Set False to keep prompts and
+                                 completions out of traces (recommended if your
+                                 LLM calls handle PII or regulated content).
 
     Returns:
         Configured OpenTelemetry tracer, or None if setup fails.

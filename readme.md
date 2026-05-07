@@ -179,6 +179,15 @@ A pre-built LLM Traces dashboard is provisioned automatically at [http://localho
 | `OTEL_EXPORTER_OTLP_HEADERS` | Fallback OTLP headers |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http` (default) or `grpc` |
 
+### Security: what leaves the SDK
+
+`otlp_endpoint` is the egress destination for every span. If `capture_message_content=True` (the default), spans include prompt and completion text. Ward does not validate the endpoint, enforce TLS, or pin certificates — treat the URL as a trusted boundary you own:
+
+- Use `https://` in production. The SDK will not reject `http://`.
+- Treat any value passed via `otlp_headers` (e.g. `Authorization: Bearer <key>`) as a credential. Read it from environment, not from a string literal in source.
+- If your LLM calls handle PII or regulated content, set `capture_message_content=False` to keep prompts and completions out of traces.
+- Rotate the API key you pass via `otlp_headers` whenever the endpoint changes.
+
 ## Span Attributes
 
 Ward follows the [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/):
