@@ -4,18 +4,32 @@ import { useState } from "react";
 import { Copy, Check, ExternalLink, PlayCircle } from "lucide-react";
 import Link from "next/link";
 
+import { OTLP_ENDPOINT } from "@/lib/dashboard-config";
+
 interface SdkOnboardingProps {
-  projectSlug: string;
-  apiKey?: string;
+  /**
+   * Whether the tenant already has an active API key. We deliberately do NOT
+   * accept the key value itself — the only place plaintext is ever available
+   * is at creation time inside `<CreateKeyDialog>`. The DB stores a hash plus
+   * a 12-char `keyPrefix` for display, and embedding that prefix in copy-paste
+   * code samples would break the snippet (the gateway authenticates the full
+   * key, not the prefix). Callers pass a boolean signal so we can phrase the
+   * setup steps correctly without ever exposing a non-functional value.
+   */
+  hasActiveKey?: boolean;
 }
 
-export function SdkOnboarding({ apiKey }: SdkOnboardingProps) {
+export function SdkOnboarding({ hasActiveKey = false }: SdkOnboardingProps) {
   const [activeTab, setActiveTab] = useState("python");
   const [copiedCode, setCopiedCode] = useState(false);
 
-  const otlpEndpoint = process.env.NODE_ENV === "production"
-    ? "https://api.ward.dev/v1/otlp"
-    : "http://localhost:4318";
+  // Single source of truth — see `dashboard/src/lib/dashboard-config.ts`.
+  // The gateway authenticates `Authorization: Bearer <key>` and injects
+  // `ward.tenant_id` into the OTLP resource before forwarding to the collector.
+  const otlpEndpoint = OTLP_ENDPOINT;
+  // Always a placeholder. Plaintext keys live only in the user's clipboard
+  // after creation — we never read them back from the DB.
+  const apiKeyValue = "your-api-key-here";
 
   const codeExamples = {
     python: `# Install Ward SDK
@@ -28,7 +42,7 @@ from openai import OpenAI
 # Initialize Ward with your API key
 ward.init(
     otlp_endpoint="${otlpEndpoint}",
-    otlp_headers={"x-api-key": "${apiKey || 'your-api-key-here'}"}
+    otlp_headers={"Authorization": "Bearer ${apiKeyValue}"}
 )
 
 # Now all OpenAI calls are automatically traced
@@ -50,7 +64,7 @@ import OpenAI from 'openai';
 // Initialize Ward with your API key
 ward.init({
     otlpEndpoint: "${otlpEndpoint}",
-    otlpHeaders: {"x-api-key": "${apiKey || 'your-api-key-here'}"}
+    otlpHeaders: {"Authorization": "Bearer ${apiKeyValue}"}
 });
 
 // Now all OpenAI calls are automatically traced
@@ -139,42 +153,45 @@ console.log(response.choices[0].message.content);`
           <div className="rounded-xl border tech-border bg-panel p-6">
             <h3 className="text-lg font-semibold text-foreground">Setup Steps</h3>
             <div className="mt-4 space-y-4">
-              {!apiKey && (
-                <div className="flex items-start gap-3 rounded-lg bg-yellow-500/10 p-4">
-                  <div className="flex h-6 w-6 items-center justify-center rounded-full bg-yellow-500/20 text-xs font-semibold text-yellow-600">
-                    1
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-foreground">Create API Key</p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      You&apos;ll need a Ward API key to send traces.
-                    </p>
-                    <Link
-                      href="/settings/keys"
-                      className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
-                    >
-                      Create API key
-                      <ExternalLink className="h-3 w-3" />
-                    </Link>
-                  </div>
+              <div className="flex items-start gap-3 rounded-lg bg-yellow-500/10 p-4">
+                <div className="flex h-6 w-6 items-center justify-center rounded-full bg-yellow-500/20 text-xs font-semibold text-yellow-600">
+                  1
                 </div>
-              )}
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {hasActiveKey ? "Find your API key" : "Create API key"}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {hasActiveKey
+                      ? "You already have an active key, but the full value is only shown once at creation. If you don't have it saved, create a new key and replace the placeholder below."
+                      : "Generate a key in Settings, copy the value once it appears, and paste it in place of \"your-api-key-here\" below."}
+                  </p>
+                  <Link
+                    href="/settings/keys"
+                    className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
+                  >
+                    {hasActiveKey ? "Manage API keys" : "Create API key"}
+                    <ExternalLink className="h-3 w-3" />
+                  </Link>
+                </div>
+              </div>
 
               <div className="flex items-start gap-3">
                 <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500/20 text-xs font-semibold text-blue-600">
-                  {!apiKey ? "2" : "1"}
+                  2
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">Install & Run</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Copy the code above and run it in your project.
+                    Copy the code above, replace the placeholder with your key,
+                    and run it in your project.
                   </p>
                 </div>
               </div>
 
               <div className="flex items-start gap-3">
                 <div className="flex h-6 w-6 items-center justify-center rounded-full bg-green-500/20 text-xs font-semibold text-green-600">
-                  {!apiKey ? "3" : "2"}
+                  3
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">Watch Dashboard</p>
@@ -211,7 +228,7 @@ console.log(response.choices[0].message.content);`
         </p>
         <div className="mt-4 rounded-lg bg-background p-4">
           <code className="text-sm text-foreground">
-            WARD_API_KEY={apiKey || "your-ward-api-key"}<br/>
+            WARD_API_KEY=your-ward-api-key<br/>
             OPENAI_API_KEY=your-openai-api-key
           </code>
         </div>

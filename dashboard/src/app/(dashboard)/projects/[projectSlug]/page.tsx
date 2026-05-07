@@ -16,12 +16,13 @@ export default async function ProjectDashboardPage({
     return <TenantContextFallback />;
   }
 
-  const [metrics, apiKeys] = await Promise.all([
+  // We only need to know whether the tenant already has an active key —
+  // never the value. Plaintext exists only at creation; the DB stores a hash
+  // plus a truncated 12-char prefix that won't authenticate. Embedding the
+  // prefix in the onboarding snippet would silently break copy-paste setup.
+  const [metrics, hasActiveKey] = await Promise.all([
     getOverviewMetrics(org.tenantId),
-    prisma.apiKey.findFirst({
-      where: { orgId: org.id, active: true },
-      orderBy: { createdAt: 'desc' },
-    }),
+    prisma.apiKey.count({ where: { orgId: org.id, active: true } }).then((n) => n > 0),
   ]);
 
   const projectName = getProjectDisplayName(projectSlug);
@@ -30,7 +31,7 @@ export default async function ProjectDashboardPage({
 
   // If no data, show only the SDK onboarding
   if (!hasData) {
-    return <SdkOnboarding projectSlug={projectSlug} apiKey={apiKeys?.keyPrefix} />;
+    return <SdkOnboarding hasActiveKey={hasActiveKey} />;
   }
 
   // If has data, show the full dashboard
