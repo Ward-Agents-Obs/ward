@@ -1,0 +1,34 @@
+# Known-historical leak fingerprints. Each entry must point to a finding that
+# is intentionally retained — typically because the literal predates the
+# cleanup, has been revoked server-side, and rewriting history is not on the
+# table.
+#
+# Format: <commit-sha>:<file>:<rule-id>:<line>
+# Source: gitleaks detect --report-format json
+#
+# Adding to this file: open `.agents/tenant-isolation-audit.md` first, find or
+# add a finding entry that explains *why* this leak is acceptable, then paste
+# the fingerprint here under the matching comment header.
+
+# ---------------------------------------------------------------------------
+# F1 — leaked plaintext API key (`ak_live_be098…`)
+# Sha256:    e6f4b95838cd9f24e850ad7f6c7f1792ae923228fe922c0c73233564c938fe98
+# Decision: revoke server-side, leave history. See tenant-isolation-audit.md F1.
+# Captured: 2026-05-07 via `gitleaks detect --config .gitleaks.toml --redact`
+# ---------------------------------------------------------------------------
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:setup_test_environment.sh:ward-api-key:161
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:setup_test_environment.sh:ward-api-key:216
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:generate_test_data.py:bearer-token-literal:38
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:generate_test_data.py:ward-api-key:38
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:load_test.py:bearer-token-literal:46
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:load_test.py:ward-api-key:46
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:test_session.py:ward-api-key:11
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:test_session.py:bearer-token-literal:11
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:test_comprehensive_workflows.py:bearer-token-literal:36
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:test_comprehensive_workflows.py:ward-api-key:36
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:simulate_customer_journey.py:ward-api-key:42
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:simulate_customer_journey.py:bearer-token-literal:42
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:verify_metrics.py:ward-api-key:42
+0ae6fa2eb3fa273a49024466d16a0dbfd116361f:verify_metrics.py:bearer-token-literal:42
+d5770d12c54a894b79a24163a3c43fb82920c3e5:test.py:bearer-token-literal:10
+d5770d12c54a894b79a24163a3c43fb82920c3e5:test.py:ward-api-key:10

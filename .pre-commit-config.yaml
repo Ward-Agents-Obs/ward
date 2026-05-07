@@ -1,0 +1,16 @@
+# Pre-commit hooks for the Ward repo.
+#
+# Install once:
+#     pip install pre-commit && pre-commit install
+#
+# Run manually against the whole tree:
+#     pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        # Default behaviour scans staged content only. Config lives in
+        # .gitleaks.toml at the repo root.
+        name: gitleaks (secret scan)
