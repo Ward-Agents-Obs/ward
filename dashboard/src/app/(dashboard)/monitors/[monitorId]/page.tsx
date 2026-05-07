@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import { getOrCreateOrg } from "@/lib/org";
 import { TenantContextFallback } from "@/components/tenant-context-fallback";
 import { getMonitor, getMonitorTriggers } from "@/lib/monitors";
@@ -14,7 +14,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { EditMonitorButton } from "@/components/monitors/edit-monitor-button";
 import { MonitorStatusPill } from "@/components/monitors/monitor-status-pill";
 import {
@@ -249,12 +249,53 @@ export default async function MonitorDetailPage({
         )}
       </section>
 
-      {/* TODO(#20): "Recent matching spans" panel linking into /traces
-        * filtered by env/model/window-of-last-fire — per architect's §V1.D
-        * detail spec. Reuses the existing `<SpanListTable>`; query is
-        * `getSpans({ environment, model, timeRange })` already available. */}
+      {/* Recent matching spans — deep-link into /traces with this monitor's
+        * scope filters applied. We don't render spans inline (architect's
+        * §V1.D spec calls for it but the value-add over a one-click open is
+        * small for V1, and inlining would duplicate the SpanListTable's
+        * querying logic). The link uses a 24h window which covers monitor
+        * windows from 5m up to 24h; users can adjust on /traces. */}
+      <section className="rounded-[1.5rem] border tech-border bg-panel p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-medium text-foreground">
+              Recent matching spans
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Open the trace explorer with this monitor&apos;s scope filters
+              applied —{" "}
+              <span className="font-medium text-foreground">{scope}</span>,
+              last 24 hours. Useful for triage when a fire is active or to
+              verify a quiet monitor is actually quiet.
+            </p>
+          </div>
+          <Button asChild variant="secondary" size="sm" className="shrink-0">
+            <Link href={buildMatchingSpansHref(monitor)}>
+              Open in /traces
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        </div>
+      </section>
     </main>
   );
+}
+
+/**
+ * Build a `/traces` deep-link that pre-applies this monitor's scope filters.
+ * Empty scope (env/model both null) yields a link with just `?timeRange=24h`,
+ * which is still useful — the user can eyeball whether anything's coming in
+ * at all.
+ */
+function buildMatchingSpansHref(monitor: {
+  environment?: string | null;
+  model?: string | null;
+}): string {
+  const params = new URLSearchParams();
+  params.set("timeRange", "24h");
+  if (monitor.environment) params.set("environment", monitor.environment);
+  if (monitor.model) params.set("model", monitor.model);
+  return `/traces?${params.toString()}`;
 }
 
 function DetailField({
