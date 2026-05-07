@@ -23,3 +23,6 @@ build/
 # Legacy
 node_modules/
 designdocs/
+
+# gitleaks scratch reports (config files .gitleaks.toml / .gitleaksignore are tracked)
+.gitleaks-*.json

@@ -1,0 +1,3 @@
+# Locally-built binaries from `go build` (e.g. setup_test_environment.sh builds the seed tool here)
+seed
+gateway
