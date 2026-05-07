@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "worker:monitors": "tsx --env-file=.env scripts/worker-monitors.ts"
   },
   "dependencies": {
     "@clickhouse/client": "^1.18.2",
