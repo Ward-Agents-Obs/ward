@@ -21,6 +21,8 @@ Backend agent has been silent ~1h+. I reassigned #14 to architect after three pi
 | `70ed242` | feat(infra): plumb COLLECTOR_AUTH_TOKEN through ECS task definitions (#25 part 2) |
 | `4b12319` | chore(gateway): anchor binary ignores so cmd/ source dirs aren't shadowed |
 | `3fa7b15` | feat(dashboard): add Recent matching spans deep-link to monitor detail |
+| `3ec910b` | feat(dashboard): polish #18/#20 with keyboard nav + skeleton refresh |
+| `890cd9a` | docs: session handoff notes 2026-05-07 (this file) |
 
 ## In-flight when you left
 
@@ -29,7 +31,14 @@ Backend agent has been silent ~1h+. I reassigned #14 to architect after three pi
 - `dashboard/prisma/migrations/migration_lock.toml` (M) — architect's #14
 - `dashboard/prisma/migrations/20260507045844_add_monitors/` (??) — architect's #14
 
-**Architect on #14**: brief sent included schema → migration → tsx tenant-isolation test → one commit. They confirmed reroute and started. Files appearing in tree means they're mid-work.
+**Architect on #14**: brief sent included schema → migration → tsx tenant-isolation test → one commit. They confirmed reroute and started. Files in working tree (uncommitted, theirs to signal):
+- `dashboard/prisma/schema.prisma` (M)
+- `dashboard/prisma/migrations/migration_lock.toml` (M)
+- `dashboard/prisma/migrations/20260507045844_add_monitors/` (??)
+- `dashboard/__tests__/monitor-schema-tenant-isolation.ts` (??)
+- `dashboard/scripts/run-tenant-isolation-tests.sh` (M, runner updated)
+
+Frontend confirmed `tsc` reports the expected errors against architect's new test (Prisma client doesn't yet have `monitor` / `monitorTrigger` fields) — clears when architect runs `prisma generate` and the schema commit lands. Not a blocker.
 
 **Debug-expert on #26**: my push-back in their inbox. Key directives:
 - Invert revoke ordering: Redis-first (kill auth), Postgres-second
