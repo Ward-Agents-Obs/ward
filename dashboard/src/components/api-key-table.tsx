@@ -1,6 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 interface ApiKeyRow {
   id: string;
@@ -11,6 +20,17 @@ interface ApiKeyRow {
   lastUsedAt: string | null;
 }
 
+/**
+ * API key list table for `/settings/keys`. Migrated to V1 ui primitives as
+ * part of #43 (styling-drift sweep). Behaviour unchanged from V1.0; tokens
+ * + components consolidated.
+ *
+ * Status pills use `--destructive` for "Revoked" (resolved by globals.css)
+ * and an emerald accent for "Active" — emerald isn't a Ward design token,
+ * but it's the universally-understood "ok" colour and there's no semantic
+ * `--success` token in the palette. If we add one later this is a one-line
+ * swap.
+ */
 export function ApiKeyTable({
   keys,
   onRevoke,
@@ -28,58 +48,65 @@ export function ApiKeyTable({
 
   if (keys.length === 0) {
     return (
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-12 text-center text-zinc-500">
-        No API keys yet. Create one to start sending traces.
+      <div className="rounded-2xl border border-dashed tech-border bg-panel p-12 text-center">
+        <p className="text-sm font-medium text-foreground">No API keys yet</p>
+        <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+          Create one to start sending traces from your app. The plaintext is
+          shown once at creation; copy it then.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-zinc-800">
-      <table className="w-full text-sm">
-        <thead className="border-b border-zinc-800 bg-zinc-900/50">
-          <tr>
-            <th className="px-4 py-3 text-left font-medium text-zinc-400">Name</th>
-            <th className="px-4 py-3 text-left font-medium text-zinc-400">Key</th>
-            <th className="px-4 py-3 text-left font-medium text-zinc-400">Status</th>
-            <th className="px-4 py-3 text-left font-medium text-zinc-400">Created</th>
-            <th className="px-4 py-3 text-right font-medium text-zinc-400">Actions</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-zinc-800/50">
-          {keys.map((key) => (
-            <tr key={key.id} className="transition-colors hover:bg-zinc-900/50">
-              <td className="px-4 py-3 font-medium">{key.name}</td>
-              <td className="px-4 py-3 font-mono text-zinc-400">{key.keyPrefix}</td>
-              <td className="px-4 py-3">
-                {key.active ? (
-                  <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-400">
-                    Active
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-400">
-                    Revoked
-                  </span>
-                )}
-              </td>
-              <td className="px-4 py-3 text-zinc-400">
-                {new Date(key.createdAt).toLocaleDateString()}
-              </td>
-              <td className="px-4 py-3 text-right">
-                {key.active && (
-                  <button
-                    onClick={() => handleRevoke(key.id)}
-                    disabled={revoking === key.id}
-                    className="rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50"
-                  >
-                    {revoking === key.id ? "Revoking..." : "Revoke"}
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Name</TableHead>
+          <TableHead>Key</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Created</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {keys.map((key) => (
+          <TableRow key={key.id}>
+            <TableCell className="font-medium text-foreground">
+              {key.name}
+            </TableCell>
+            <TableCell className="font-mono text-xs text-muted-foreground">
+              {key.keyPrefix}
+            </TableCell>
+            <TableCell>
+              {key.active ? (
+                <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-500">
+                  Active
+                </span>
+              ) : (
+                <span className="inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
+                  Revoked
+                </span>
+              )}
+            </TableCell>
+            <TableCell className="text-muted-foreground">
+              {new Date(key.createdAt).toLocaleDateString()}
+            </TableCell>
+            <TableCell className="text-right">
+              {key.active ? (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => handleRevoke(key.id)}
+                  disabled={revoking === key.id}
+                >
+                  {revoking === key.id ? "Revoking…" : "Revoke"}
+                </Button>
+              ) : null}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }
