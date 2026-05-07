@@ -26,3 +26,6 @@ designdocs/
 
 # gitleaks scratch reports (config files .gitleaks.toml / .gitleaksignore are tracked)
 .gitleaks-*.json
+
+# Claude Code local session state (settings.local.json, scheduled_tasks.lock, etc.)
+.claude/
