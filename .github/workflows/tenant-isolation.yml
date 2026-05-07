@@ -1,0 +1,147 @@
+name: tenant-isolation
+
+# Regression test for tenant isolation across the SDK → gateway → ClickHouse →
+# dashboard chain. See `.agents/tenant-isolation-audit.md` for the full audit
+# this is regression-protecting; B6 (#9) for the testing brief.
+#
+# The job:
+#   1. Brings up docker-compose (clickhouse, redis, gateway, otel-collector).
+#   2. Seeds two tenants via `gateway/cmd/seed`.
+#   3. Runs every `*-tenant-isolation.ts` script under `dashboard/__tests__/`
+#      against the live ClickHouse.
+#   4. Runs `TestTenantIsolation` in `src/tests/test_gateway_integration.py`
+#      against the live gateway, exercising the spoof-resistance path.
+#
+# Triggered on PRs and push-to-main only — not on a schedule, since the data
+# layer never changes drift-style and a regression here is always something
+# a code change introduced.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  tenant-isolation:
+    name: tenant-isolation regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go (for gateway seed)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: gateway/go.sum
+
+      - name: Set up Node (for tsx test runner)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Set up Python (for pytest spoof tests)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest requests opentelemetry-proto
+
+      - name: Bring up docker-compose stack
+        run: |
+          # Provide harmless dummy Supabase env so the dashboard container
+          # build doesn't fail. The dashboard service is unused by these tests
+          # but compose otherwise exits non-zero.
+          export NEXT_PUBLIC_SUPABASE_URL="https://example.supabase.co"
+          export NEXT_PUBLIC_SUPABASE_ANON_KEY="placeholder"
+          # Bring up only the data-plane services this test needs.
+          docker compose up -d redis clickhouse otel-collector gateway
+          # Wait for healthchecks. clickhouse + gateway expose them; redis is
+          # ready almost instantly.
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8123/ping > /dev/null \
+               && curl -sf http://localhost:8080/health > /dev/null; then
+              echo "stack is up"; break
+            fi
+            echo "waiting for stack ($i)..."; sleep 2
+          done
+          # Final check; fail fast if anything's still down.
+          curl -sf http://localhost:8123/ping
+          curl -sf http://localhost:8080/health
+
+      - name: Seed two tenants via gateway/cmd/seed
+        id: seed
+        working-directory: gateway
+        run: |
+          set -euo pipefail
+          # The seed binary reads REDIS_ADDR from env. It generates a fresh
+          # random key on each invocation (#27 backlog: idempotent reuse).
+          OUT_A="$(REDIS_ADDR=localhost:6379 go run ./cmd/seed --tenant ci-tenant-A)"
+          OUT_B="$(REDIS_ADDR=localhost:6379 go run ./cmd/seed --tenant ci-tenant-B)"
+          KEY_A="$(echo "$OUT_A" | awk '/^  Key:/ {print $2}')"
+          KEY_B="$(echo "$OUT_B" | awk '/^  Key:/ {print $2}')"
+          if [[ -z "$KEY_A" || -z "$KEY_B" ]]; then
+            echo "::error::failed to extract one or both seeded keys"; exit 1
+          fi
+          # Mask the keys in subsequent log lines.
+          echo "::add-mask::$KEY_A"
+          echo "::add-mask::$KEY_B"
+          # Surface to later steps without exposing the values in plain text.
+          {
+            echo "key_a=$KEY_A"
+            echo "key_b=$KEY_B"
+            echo "tenant_a=ci-tenant-A"
+            echo "tenant_b=ci-tenant-B"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run dashboard query tenant-isolation tests
+        working-directory: dashboard
+        env:
+          CLICKHOUSE_URL: http://localhost:8123
+          CLICKHOUSE_USER: otel
+          CLICKHOUSE_PASSWORD: otelpass
+        run: bash scripts/run-tenant-isolation-tests.sh
+
+      - name: Run gateway spoof regression tests
+        env:
+          GATEWAY_URL: http://localhost:8080
+          CLICKHOUSE_URL: http://localhost:8123
+          CLICKHOUSE_USER: otel
+          CLICKHOUSE_PASSWORD: otelpass
+          WARD_TEST_API_KEY: ${{ steps.seed.outputs.key_a }}
+          WARD_TEST_TENANT_ID: ${{ steps.seed.outputs.tenant_a }}
+          WARD_TEST_API_KEY_B: ${{ steps.seed.outputs.key_b }}
+          WARD_TEST_TENANT_ID_B: ${{ steps.seed.outputs.tenant_b }}
+        run: |
+          python -m pytest \
+            src/tests/test_gateway_integration.py::TestTenantIsolation \
+            -v --tb=short
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "=== gateway ===";        docker compose logs gateway || true
+          echo "=== otel-collector ==="; docker compose logs otel-collector || true
+          echo "=== clickhouse ===";     docker compose logs clickhouse || true
+          echo "=== redis ===";          docker compose logs redis || true
+
+      - name: Tear down docker-compose
+        if: always()
+        run: docker compose down -v
