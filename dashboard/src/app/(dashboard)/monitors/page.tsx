@@ -1,50 +1,223 @@
+import Link from "next/link";
 import { Radar } from "lucide-react";
 import { getOrCreateOrg } from "@/lib/org";
 import { TenantContextFallback } from "@/components/tenant-context-fallback";
+import { getMonitors, type MonitorListRow } from "@/lib/monitors";
+import { getDistinctEnvironments } from "@/lib/queries/sessions";
+import { getDistinctModels } from "@/lib/queries/traces";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { TimeRangePicker } from "@/components/ui/time-range-picker";
+import { CreateMonitorButton } from "@/components/monitors/create-monitor-button";
+import {
+  formatCondition,
+  formatMetricValue,
+  formatRelativeTime,
+  formatScope,
+  resolveMonitorStatus,
+  type MonitorRenderStatus,
+} from "@/components/monitors/monitor-format";
+import { MonitorStatusPill } from "@/components/monitors/monitor-status-pill";
 
 /**
- * V1 Monitors landing page.
+ * V1 Monitors list page (F7 / task #18). Scaffolded against mock data via
+ * `getMonitors()` — backend's #14 lands the Prisma model and #15 wires the
+ * server actions, at which point the list helper swaps to a real Prisma
+ * query (see TODO inside `lib/monitors.ts`).
  *
- * This is the route stub created alongside the sidebar prune (B1) so the
- * Monitors nav link resolves instead of 404-ing while the full UI lands in
- * task F3. It renders the genuine zero-state of the Monitors feature: when
- * no monitors are configured for the tenant, the user sees this page and
- * the explanation of what monitors do.
+ * Behaviour today:
+ *  - Renders 3 mock monitors (firing / ok / disabled) so every status pill
+ *    code path renders without backend.
+ *  - Status filter chips are URL-state via the shared `<TimeRangePicker>`
+ *    primitive (renamed in spirit to "URL-state segmented picker" — same
+ *    component, different option set + paramName).
+ *  - "Create monitor" button mounts `<MonitorFormDialog>` and uses the
+ *    existing stub server actions; submit currently returns
+ *    `{ ok: false, message: "...waiting on B7/B8..." }` so the user sees a
+ *    clear error message inside the modal until backend lands.
  *
- * F3 will extend this file with a Prisma-backed list view, a Create button,
- * and the trigger-history surface — replacing the empty state with a table
- * when monitors exist for the tenant.
+ * NOT marked completed in the task list — this is the scaffold half of
+ * #18; the swap-in to real data closes it out.
  */
-export default async function MonitorsPage() {
-  const org = await getOrCreateOrg();
+
+const STATUS_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "firing", label: "Firing" },
+  { value: "ok", label: "Ok" },
+  { value: "disabled", label: "Disabled" },
+] as const;
+type StatusFilterValue = (typeof STATUS_FILTERS)[number]["value"];
+
+function parseStatus(raw: string | undefined): StatusFilterValue {
+  const allowed = STATUS_FILTERS.map((f) => f.value) as readonly string[];
+  if (raw && allowed.includes(raw)) return raw as StatusFilterValue;
+  return "all";
+}
+
+function matchesFilter(
+  status: MonitorRenderStatus,
+  filter: StatusFilterValue,
+): boolean {
+  return filter === "all" || filter === status;
+}
+
+export default async function MonitorsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string }>;
+}) {
+  const [org, query] = await Promise.all([getOrCreateOrg(), searchParams]);
   if (!org?.tenantId) {
     return <TenantContextFallback />;
   }
 
+  const statusFilter = parseStatus(query.status);
+
+  // Parallel fetch — env/model lists for the dialog dropdowns, monitor list
+  // from the stub. Distinct queries are tenant-scoped via `requireTenantId`
+  // upstream; the monitor stub takes `orgId` so the swap-in to Prisma
+  // already has the right argument.
+  const [monitors, environments, models] = await Promise.all([
+    getMonitors(org.id),
+    getDistinctEnvironments(org.tenantId),
+    getDistinctModels(org.tenantId),
+  ]);
+
+  const filtered = monitors.filter((m) =>
+    matchesFilter(
+      resolveMonitorStatus({ enabled: m.enabled, state: m.state }),
+      statusFilter,
+    ),
+  );
+
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-6 py-8 lg:px-10 lg:py-10">
+    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-6 py-8 lg:px-10 lg:py-10">
       <div className="rounded-[2rem] border tech-border bg-panel p-8 shadow-sm">
-        <span className="inline-flex rounded-full bg-background px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-          Ward / Monitors
-        </span>
-        <h1 className="mt-5 text-3xl font-semibold tracking-tight text-foreground">Monitors</h1>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-          Get alerted when cost, latency, or error rate crosses a threshold for a specific model
-          or environment. Monitors evaluate your tenant&apos;s recent spans on a fixed cadence and
-          surface a banner in the dashboard when a condition is breached.
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl">
+            <span className="inline-flex rounded-full bg-background px-3 py-1 text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+              Ward / Monitors
+            </span>
+            <h1 className="mt-5 text-3xl font-semibold tracking-tight text-foreground">
+              Monitors
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+              Get alerted when cost, latency, or error rate crosses a threshold
+              for a specific model or environment.
+            </p>
+          </div>
+          <CreateMonitorButton
+            availableEnvironments={environments}
+            availableModels={models}
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <TimeRangePicker
+          value={statusFilter}
+          options={STATUS_FILTERS}
+          paramName="status"
+          ariaLabel="Filter by status"
+        />
+        <p className="text-sm text-muted-foreground">
+          {filtered.length} of {monitors.length}{" "}
+          {monitors.length === 1 ? "monitor" : "monitors"}
         </p>
       </div>
 
-      <div className="mt-8 rounded-[2rem] border tech-border bg-panel p-12 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-background text-foreground">
-          <Radar className="h-5 w-5" />
+      {monitors.length === 0 ? (
+        <div className="rounded-[1.5rem] border border-dashed tech-border bg-panel p-12 text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-background text-foreground">
+            <Radar className="h-5 w-5" aria-hidden="true" />
+          </div>
+          <h2 className="mt-5 text-lg font-semibold text-foreground">
+            No monitors yet
+          </h2>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+            Create a monitor to get notified when costs spike, latency degrades,
+            or error rates climb. You can scope each monitor to a single
+            environment or model.
+          </p>
         </div>
-        <h2 className="mt-5 text-lg font-semibold text-foreground">No monitors configured</h2>
-        <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-          Once monitor creation ships, you&apos;ll be able to track cost, p95 latency, and error
-          rate across your traces from this page. For now there is nothing to alert on yet.
-        </p>
-      </div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-[1.5rem] border border-dashed tech-border bg-panel p-10 text-center">
+          <p className="text-sm font-medium text-foreground">
+            No monitors match the {STATUS_FILTERS.find((f) => f.value === statusFilter)?.label.toLowerCase()} filter.
+          </p>
+          <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+            Try clearing the filter or creating a monitor with a different
+            scope.
+          </p>
+        </div>
+      ) : (
+        <MonitorListTable monitors={filtered} />
+      )}
     </main>
+  );
+}
+
+function MonitorListTable({ monitors }: { monitors: MonitorListRow[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Status</TableHead>
+          <TableHead>Name</TableHead>
+          <TableHead>Condition</TableHead>
+          <TableHead>Scope</TableHead>
+          <TableHead className="text-right">Last value</TableHead>
+          <TableHead className="text-right">Last evaluated</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {monitors.map((m) => {
+          const status = resolveMonitorStatus({
+            enabled: m.enabled,
+            state: m.state,
+          });
+          return (
+            <TableRow key={m.id}>
+              <TableCell>
+                <MonitorStatusPill status={status} />
+              </TableCell>
+              <TableCell>
+                <Link
+                  href={`/monitors/${m.id}`}
+                  className="font-medium text-foreground hover:underline"
+                >
+                  {m.name}
+                </Link>
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {formatCondition({
+                  metric: m.metric,
+                  comparator: m.comparator,
+                  threshold: m.threshold,
+                  windowMinutes: m.windowMinutes,
+                })}
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {formatScope({ environment: m.environment, model: m.model })}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {m.lastValue !== null
+                  ? formatMetricValue(m.metric, m.lastValue)
+                  : "—"}
+              </TableCell>
+              <TableCell className="text-right text-muted-foreground">
+                {formatRelativeTime(m.lastEvaluatedAt)}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
   );
 }

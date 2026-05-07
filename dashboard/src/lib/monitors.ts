@@ -222,3 +222,185 @@ export async function previewMonitorMetric(
   void input;
   return { value: 0, asOf: null, ready: false };
 }
+
+// ---------------------------------------------------------------------------
+// List + detail read helpers — stubs for F7 (#18) and F9 (#20). All three
+// helpers return mock data shaped exactly like the real Prisma read so the
+// page swap-in is body-only when backend's #14 / B11-style queries land.
+// ---------------------------------------------------------------------------
+
+/**
+ * Trigger history row. Mirrors the `MonitorTrigger` Prisma model from
+ * `monitors-design.md` §2.
+ */
+export interface MonitorTrigger {
+  id: string;
+  monitorId: string;
+  firedAt: string;
+  resolvedAt: string | null;
+  triggerValue: number;
+  threshold: number;
+  comparator: MonitorComparator;
+}
+
+/**
+ * Row shape used by the `/monitors` list page. Extends the base `Monitor`
+ * with `lastTriggeredAt`, which the real impl will derive from the latest
+ * `MonitorTrigger.firedAt` for that monitor (likely via a Prisma include +
+ * post-process or a windowed subquery).
+ */
+export interface MonitorListRow extends Monitor {
+  lastTriggeredAt: string | null;
+}
+
+/**
+ * V1 STUB. Real impl swaps to:
+ *
+ *   const monitors = await prisma.monitor.findMany({
+ *     where: { orgId },
+ *     orderBy: { updatedAt: "desc" },
+ *     include: { triggers: { orderBy: { firedAt: "desc" }, take: 1 } },
+ *   });
+ *   return monitors.map((m) => ({ ...m, lastTriggeredAt: m.triggers[0]?.firedAt ?? null }));
+ *
+ * The mock entries cover every state the list page needs to render — a
+ * firing monitor, a healthy ok monitor, and a disabled monitor — so the
+ * scaffolded UI exercises every code path before backend lands #14.
+ */
+export async function getMonitors(orgId: string): Promise<MonitorListRow[]> {
+  // TODO(#18): replace with prisma.monitor.findMany({ where: { orgId }, ... }).
+  void orgId;
+  const now = new Date();
+  const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
+  return [
+    {
+      id: "mon_mock_firing",
+      name: "Cost spike — production",
+      description: "Alerts when prod model spend crosses the daily budget.",
+      metric: "cost",
+      comparator: "gt",
+      threshold: 5,
+      windowMinutes: 60,
+      environment: "production",
+      model: null,
+      enabled: true,
+      state: "firing",
+      lastEvaluatedAt: minutesAgo(2),
+      lastValue: 7.42,
+      lastTriggeredAt: minutesAgo(8),
+    },
+    {
+      id: "mon_mock_ok",
+      name: "p95 latency — gpt-4o",
+      description: null,
+      metric: "latency_p95",
+      comparator: "gt",
+      threshold: 1500,
+      windowMinutes: 15,
+      environment: "production",
+      model: "gpt-4o",
+      enabled: true,
+      state: "ok",
+      lastEvaluatedAt: minutesAgo(1),
+      lastValue: 980,
+      lastTriggeredAt: null,
+    },
+    {
+      id: "mon_mock_disabled",
+      name: "Error rate — staging",
+      description: "Paused while we tune the new prompt template.",
+      metric: "error_rate",
+      comparator: "gt",
+      threshold: 0.05,
+      windowMinutes: 60,
+      environment: "staging",
+      model: null,
+      enabled: false,
+      state: "ok",
+      lastEvaluatedAt: minutesAgo(180),
+      lastValue: 0.012,
+      lastTriggeredAt: minutesAgo(60 * 24 * 3),
+    },
+  ];
+}
+
+/**
+ * V1 STUB. Real impl swaps to:
+ *
+ *   const monitor = await prisma.monitor.findFirst({ where: { id, orgId } });
+ *   return monitor ?? null;
+ *
+ * `orgId` is required so the swap-in trivially enforces the IDOR guard
+ * called out in `monitors-design.md` §7 (`monitor.orgId === currentOrg.id`)
+ * — looking up by the compound `(id, orgId)` makes "wrong tenant" return
+ * `null`, not throw.
+ */
+export async function getMonitor(
+  orgId: string,
+  id: string,
+): Promise<MonitorListRow | null> {
+  // TODO(#20): replace with prisma.monitor.findFirst({ where: { id, orgId }, ... }).
+  const all = await getMonitors(orgId);
+  return all.find((m) => m.id === id) ?? null;
+}
+
+/**
+ * V1 STUB. Real impl swaps to:
+ *
+ *   return prisma.monitorTrigger.findMany({
+ *     where: { monitorId, monitor: { orgId } },
+ *     orderBy: { firedAt: "desc" },
+ *     take: limit,
+ *   });
+ *
+ * The nested `monitor: { orgId }` filter is the IDOR guard — a trigger
+ * whose monitor doesn't belong to this org is filtered out at the DB level
+ * rather than relying on a follow-up check.
+ */
+export async function getMonitorTriggers(
+  orgId: string,
+  monitorId: string,
+  limit: number = 50,
+): Promise<MonitorTrigger[]> {
+  // TODO(#20): replace with prisma.monitorTrigger.findMany({ where: { monitorId, monitor: { orgId } }, ... }).
+  void orgId;
+  void limit;
+  if (monitorId !== "mon_mock_firing" && monitorId !== "mon_mock_disabled") {
+    return [];
+  }
+  const now = new Date();
+  const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
+  if (monitorId === "mon_mock_firing") {
+    return [
+      {
+        id: "trg_mock_firing_1",
+        monitorId,
+        firedAt: minutesAgo(8),
+        resolvedAt: null,
+        triggerValue: 7.42,
+        threshold: 5,
+        comparator: "gt",
+      },
+      {
+        id: "trg_mock_firing_2",
+        monitorId,
+        firedAt: minutesAgo(60 * 6),
+        resolvedAt: minutesAgo(60 * 5),
+        triggerValue: 6.1,
+        threshold: 5,
+        comparator: "gt",
+      },
+    ];
+  }
+  return [
+    {
+      id: "trg_mock_disabled_1",
+      monitorId,
+      firedAt: minutesAgo(60 * 24 * 3),
+      resolvedAt: minutesAgo(60 * 24 * 3 - 30),
+      triggerValue: 0.087,
+      threshold: 0.05,
+      comparator: "gt",
+    },
+  ];
+}
